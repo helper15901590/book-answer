@@ -46,6 +46,7 @@ import {
   Sparkles,
   Loader2,
 } from 'lucide-react';
+import { apiFetch } from '../lib/apiFetch';
 
 interface AdminPanelProps {
   llmConfig: LLMConfig;
@@ -255,10 +256,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setLoading(true);
     try {
       const [resStats, resSkills, resUsers, resLlm, resTags] = await Promise.all([
-        fetch('/api/admin/stats').then((r) => r.json()),
+        apiFetch('/api/admin/stats').then((r) => r.json()),
         fetch('/api/skills').then((r) => r.json()),
-        fetch('/api/admin/users').then((r) => r.json()),
-        fetch('/api/admin/llm-config').then((r) => r.json()),
+        apiFetch('/api/admin/users').then((r) => r.json()),
+        apiFetch('/api/admin/llm-config').then((r) => r.json()),
         fetch('/api/tags').then((r) => r.json()),
       ]);
 
@@ -278,7 +279,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleSaveLLMConfig = async () => {
     try {
-      const res = await fetch('/api/admin/llm-config', {
+      const res = await apiFetch('/api/admin/llm-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ llmConfig }),
@@ -336,7 +337,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         code: cleanCode,
         membershipTier: addUserForm.membershipTier,
       };
-      const res = await fetch('/api/admin/users/create', {
+      const res = await apiFetch('/api/admin/users/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -381,7 +382,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/admin/users/update', {
+      const res = await apiFetch('/api/admin/users/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -410,7 +411,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleResetUserQuota = async (u: UserProfile) => {
     try {
-      const res = await fetch('/api/admin/users/update', {
+      const res = await apiFetch('/api/admin/users/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -441,7 +442,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       confirmText: '确认删除',
       onConfirm: async () => {
         try {
-          const res = await fetch(`/api/admin/users/${u.id}`, { method: 'DELETE' });
+          const res = await apiFetch(`/api/admin/users/${u.id}`, { method: 'DELETE' });
           const data = await res.json();
           if (data.success) {
             showToast('用户已删除');
@@ -460,7 +461,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setTestingLLM(true);
     setLlmTestResult(null);
     try {
-      const res = await fetch('/api/admin/llm-test', {
+      const res = await apiFetch('/api/admin/llm-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -520,7 +521,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const res = await fetch('/api/skills/generate-questions', {
+      const res = await apiFetch('/api/skills/generate-questions', {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -568,7 +569,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
 
     try {
-      const res = await fetch('/api/admin/skills', {
+      const res = await apiFetch('/api/admin/skills', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ skill: skillToSave }),
@@ -598,7 +599,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       confirmText: '确认删除',
       onConfirm: async () => {
         try {
-          const res = await fetch(`/api/admin/skills/${id}`, { method: 'DELETE' });
+          const res = await apiFetch(`/api/admin/skills/${id}`, { method: 'DELETE' });
           const data = await res.json();
           if (data.success) {
             showToast(`已成功下架《${formatBookTitle(title)}》`);
@@ -626,7 +627,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const nextTags = dbCategories.map((c) => (c === oldCategory ? trimmed : c));
     setDbCategories(nextTags);
     try {
-      await fetch('/api/admin/tags', {
+      await apiFetch('/api/admin/tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -662,7 +663,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const nextTags = dbCategories.filter((c) => c !== catToDelete);
         setDbCategories(nextTags);
         try {
-          await fetch('/api/admin/tags', {
+          await apiFetch('/api/admin/tags', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -693,7 +694,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const next = [...dbCategories, catName];
     setDbCategories(next);
     try {
-      await fetch('/api/admin/tags', {
+      await apiFetch('/api/admin/tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tags: next }),
@@ -719,7 +720,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     setDbCategories(newCategoryNames);
     try {
-      await fetch('/api/admin/tags', {
+      await apiFetch('/api/admin/tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tags: newCategoryNames }),
@@ -760,7 +761,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     setDbCategories(newCategoryNames);
     try {
-      await fetch('/api/admin/tags', {
+      await apiFetch('/api/admin/tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tags: newCategoryNames }),
@@ -789,7 +790,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const limits = llmConfig.dailyLimits || { guestUser: 3, freeMember: 10 };
       const newMaxChats = newRole === 'guest' ? (limits.guestUser ?? 3) : (limits.freeMember ?? 10);
 
-      const res = await fetch('/api/admin/users/update', {
+      const res = await apiFetch('/api/admin/users/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2229,7 +2230,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             const base64 = event.target?.result as string;
                             if (base64) {
                               try {
-                                const res = await fetch('/api/admin/upload-asset', {
+                                const res = await apiFetch('/api/admin/upload-asset', {
                                   method: 'POST',
                                   headers: { 'Content-Type': 'application/json' },
                                   body: JSON.stringify({ fileName: file.name, fileData: base64 }),
@@ -2298,7 +2299,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             const base64 = event.target?.result as string;
                             if (base64) {
                               try {
-                                const res = await fetch('/api/admin/upload-asset', {
+                                const res = await apiFetch('/api/admin/upload-asset', {
                                   method: 'POST',
                                   headers: { 'Content-Type': 'application/json' },
                                   body: JSON.stringify({ fileName: file.name, fileData: base64 }),
