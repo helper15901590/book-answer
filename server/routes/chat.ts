@@ -1,11 +1,12 @@
 import { Express } from 'express';
 import { db } from '../../src/db.js';
-import { AuthRequest } from '../middleware/auth.js';
+import { AuthRequest, sanitizeUser } from '../middleware/auth.js';
 import { metrics } from '../services/metrics.js';
 import { checkAndConsumeQuota } from '../services/quota.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl, sanitizeMessagesForLLM } from '../services/llm/sanitize.js';
 import { callGeminiResponse } from '../services/llm/gemini.js';
 import { generateDeepBookDistillation } from '../services/llm/offline.js';
+import { GUEST_USER } from '../../src/data/initialData.js';
 import { ChatMessage, cleanBookTitle } from '../../src/types.js';
 
 export function registerChatRoutes(app: Express): void {
@@ -300,7 +301,7 @@ export function registerChatRoutes(app: Express): void {
       done: true,
       assistantMessage: assistantMsg,
       session,
-      user: quota.updatedUser || currentUser,
+      user: sanitizeUser(quota.updatedUser || currentUser || GUEST_USER),
     });
 
     res.end();
@@ -456,7 +457,7 @@ export function registerChatRoutes(app: Express): void {
       userMessage: userMsg,
       assistantMessage: assistantMsg,
       session,
-      user: quota.updatedUser || currentUser,
+      user: sanitizeUser(quota.updatedUser || currentUser || GUEST_USER),
     });
   });
 }

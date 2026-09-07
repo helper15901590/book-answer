@@ -25,6 +25,12 @@ export function signToken(user: UserProfile): string {
   );
 }
 
+// 对外返回的用户对象一律剥离密码字段（哈希也不可出网）
+export function sanitizeUser(user: UserProfile): UserProfile {
+  const { password: _password, ...rest } = user;
+  return rest;
+}
+
 // Extract and verify user from Request
 export function extractUserFromRequest(req: Request): UserProfile | null {
   const authHeader = req.headers.authorization;

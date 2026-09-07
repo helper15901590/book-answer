@@ -4,13 +4,15 @@ import path from 'path';
 import { GoogleGenAI } from '@google/genai';
 import { db } from '../../src/db.js';
 import { metrics } from '../services/metrics.js';
+import { requireAdmin } from '../middleware/admin.js';
+import { sanitizeUser } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
 import { resolveGeminiModelName } from '../services/llm/gemini.js';
 import { UserProfile, MembershipTier, cleanBookTitle } from '../../src/types.js';
 
 export function registerAdminRoutes(app: Express): void {
   // 2. Upload asset API
-  app.post('/api/admin/upload-asset', async (req, res) => {
+  app.post('/api/admin/upload-asset', requireAdmin, async (req, res) => {
     try {
       const { fileName, fileData } = req.body;
       if (!fileName || !fileData) {
@@ -39,7 +41,7 @@ export function registerAdminRoutes(app: Express): void {
 
   // 8. Tags Management APIs
 
-  app.post('/api/admin/tags', (req, res) => {
+  app.post('/api/admin/tags', requireAdmin, (req, res) => {
     const { tags, renamedMap, deletedTags } = req.body;
     if (!Array.isArray(tags)) {
       return res.status(400).json({ error: 'tags must be an array' });
@@ -93,7 +95,7 @@ export function registerAdminRoutes(app: Express): void {
   });
 
   // 9. Admin Operations APIs
-  app.get('/api/admin/stats', (req, res) => {
+  app.get('/api/admin/stats', requireAdmin, (req, res) => {
     const baseStats = db.getAdminStats();
     res.json({
       stats: {
@@ -107,12 +109,12 @@ export function registerAdminRoutes(app: Express): void {
     });
   });
 
-  app.get('/api/admin/users', (req, res) => {
+  app.get('/api/admin/users', requireAdmin, (req, res) => {
     const users = db.getUsers();
-    res.json({ users });
+    res.json({ users: users.map(sanitizeUser) });
   });
 
-  app.post('/api/admin/users/create', (req, res) => {
+  app.post('/api/admin/users/create', requireAdmin, (req, res) => {
     const { phone, password, code, membershipTier } = req.body;
     
     const cleanPhone = (phone || '').trim();
@@ -183,16 +185,16 @@ export function registerAdminRoutes(app: Express): void {
     };
 
     const saved = db.saveUser(newUser);
-    res.json({ success: true, user: saved });
+    res.json({ success: true, user: sanitizeUser(saved) });
   });
 
-  app.delete('/api/admin/users/:userId', (req, res) => {
+  app.delete('/api/admin/users/:userId', requireAdmin, (req, res) => {
     const { userId } = req.params;
     const success = db.deleteUser(userId);
     res.json({ success });
   });
 
-  app.post('/api/admin/users/update', (req, res) => {
+  app.post('/api/admin/users/update', requireAdmin, (req, res) => {
     const { userId, phone, password, code, membershipTier, resetQuota } = req.body;
     const user = db.getUserById(userId);
     if (!user) {
@@ -266,19 +268,19 @@ export function registerAdminRoutes(app: Express): void {
     }
 
     db.saveUser(user);
-    res.json({ success: true, user });
+    res.json({ success: true, user: sanitizeUser(user) });
   });
 
-  app.post('/api/admin/users/upgrade-tier', (req, res) => {
+  app.post('/api/admin/users/upgrade-tier', requireAdmin, (req, res) => {
     const { userId, tier, days } = req.body;
     if (!userId || !tier) {
       return res.status(400).json({ error: 'Missing userId or tier' });
     }
     const updated = db.upgradeUserMembership(userId, tier, days || 30);
-    res.json({ success: true, user: updated });
+    res.json({ success: true, user: updated ? sanitizeUser(updated) : undefined });
   });
 
-  app.post('/api/admin/users/:userId/membership', (req, res) => {
+  app.post('/api/admin/users/:userId/membership', requireAdmin, (req, res) => {
     const { userId } = req.params;
     const { membershipTier, membershipExpiresAt } = req.body;
     const user = db.getUserById(userId);
@@ -288,20 +290,20 @@ export function registerAdminRoutes(app: Express): void {
     if (membershipTier) user.membershipTier = membershipTier;
     if (membershipExpiresAt !== undefined) user.membershipExpiresAt = membershipExpiresAt;
     db.saveUser(user);
-    res.json({ success: true, user });
+    res.json({ success: true, user: sanitizeUser(user) });
   });
 
-  app.post('/api/admin/users/clear-all', (req, res) => {
+  app.post('/api/admin/users/clear-all', requireAdmin, (req, res) => {
     db.clearAllUsers();
     res.json({ success: true, message: '已成功清空所有用户数据' });
   });
 
-  app.post('/api/admin/orders/clear-all', (req, res) => {
+  app.post('/api/admin/orders/clear-all', requireAdmin, (req, res) => {
     db.clearAllOrders();
     res.json({ success: true, message: '已成功清空所有订单数据' });
   });
 
-  app.post('/api/admin/skills', (req, res) => {
+  app.post('/api/admin/skills', requireAdmin, (req, res) => {
     const { skill } = req.body;
     if (!skill || !skill.title || !skill.author) {
       return res.status(400).json({ error: '请填写真实的导师书名与作者' });
@@ -345,22 +347,22 @@ export function registerAdminRoutes(app: Express): void {
     res.json({ success: true, skill: saved });
   });
 
-  app.delete('/api/admin/skills/:id', (req, res) => {
+  app.delete('/api/admin/skills/:id', requireAdmin, (req, res) => {
     const success = db.deleteSkill(req.params.id);
     res.json({ success });
   });
 
-  app.get('/api/admin/orders', (req, res) => {
+  app.get('/api/admin/orders', requireAdmin, (req, res) => {
     const orders = db.getOrders();
     res.json({ orders });
   });
 
-  app.get('/api/admin/llm-config', (req, res) => {
+  app.get('/api/admin/llm-config', requireAdmin, (req, res) => {
     const llmConfig = db.getLLMConfig();
     res.json({ llmConfig });
   });
 
-  app.post('/api/admin/llm-config', (req, res) => {
+  app.post('/api/admin/llm-config', requireAdmin, (req, res) => {
     const { llmConfig } = req.body;
     if (!llmConfig) {
       return res.status(400).json({ error: 'Missing llmConfig data' });
@@ -369,7 +371,7 @@ export function registerAdminRoutes(app: Express): void {
     res.json({ success: true, llmConfig: saved });
   });
 
-  app.post('/api/admin/llm-test', async (req, res) => {
+  app.post('/api/admin/llm-test', requireAdmin, async (req, res) => {
     const { apiBaseUrl, apiKey, primaryModel } = req.body;
     const cleanKey = cleanApiKey(apiKey || process.env.DEEPSEEK_API_KEY || '');
     const model = (primaryModel || 'deepseek-chat').trim();

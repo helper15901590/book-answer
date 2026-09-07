@@ -1,6 +1,6 @@
 import { Express } from 'express';
 import { db } from '../../src/db.js';
-import { AuthRequest, signToken } from '../middleware/auth.js';
+import { AuthRequest, signToken, sanitizeUser } from '../middleware/auth.js';
 import { UserProfile, getEffectiveMembershipTier } from '../../src/types.js';
 import { GUEST_USER } from '../../src/data/initialData.js';
 
@@ -90,7 +90,7 @@ export function registerAuthRoutes(app: Express): void {
     }
 
     const token = signToken(user);
-    res.json({ success: true, user: { ...user, token }, token });
+    res.json({ success: true, user: { ...sanitizeUser(user), token }, token });
   });
 
   // 注册接口：专用于创建新账号并持久化至数据库
@@ -142,18 +142,18 @@ export function registerAuthRoutes(app: Express): void {
     db.saveUser(newUser);
 
     const token = signToken(newUser);
-    res.json({ success: true, user: { ...newUser, token }, token, message: '注册成功' });
+    res.json({ success: true, user: { ...sanitizeUser(newUser), token }, token, message: '注册成功' });
   });
 
   app.get('/api/auth/me', (req: AuthRequest, res) => {
     if (req.user) {
-      return res.json({ user: req.user });
+      return res.json({ user: sanitizeUser(req.user) });
     }
-    res.json({ user: GUEST_USER });
+    res.json({ user: sanitizeUser(GUEST_USER) });
   });
 
   app.post('/api/auth/logout', (req, res) => {
-    res.json({ success: true, user: GUEST_USER });
+    res.json({ success: true, user: sanitizeUser(GUEST_USER) });
   });
 
   app.post('/api/auth/update', (req: AuthRequest, res) => {
@@ -166,6 +166,6 @@ export function registerAuthRoutes(app: Express): void {
       return res.status(404).json({ error: 'User not found' });
     }
     const updated = db.saveUser({ ...existing, ...req.body.updates });
-    res.json({ success: true, user: updated });
+    res.json({ success: true, user: sanitizeUser(updated) });
   });
 }

@@ -1,6 +1,6 @@
 import { Express } from 'express';
 import { db } from '../../src/db.js';
-import { AuthRequest } from '../middleware/auth.js';
+import { AuthRequest, sanitizeUser } from '../middleware/auth.js';
 import { OrderLog, MembershipTier } from '../../src/types.js';
 
 export function registerPaymentRoutes(app: Express): void {
@@ -127,7 +127,7 @@ export function registerPaymentRoutes(app: Express): void {
       tradeNo: order.tradeNo,
       status: order.status,
       paidAt: order.paidAt,
-      user,
+      user: user ? sanitizeUser(user) : null,
     });
   });
 
@@ -144,7 +144,7 @@ export function registerPaymentRoutes(app: Express): void {
     if (targetOrder) {
       const updated = db.updateOrderStatus(targetOrder.id, 'success');
       const user = updated?.userId ? db.getUserById(updated.userId) : null;
-      return res.json({ success: true, order: updated, user });
+      return res.json({ success: true, order: updated, user: user ? sanitizeUser(user) : null });
     }
 
     if (uid) {
@@ -190,7 +190,7 @@ export function registerPaymentRoutes(app: Express): void {
         }
 
         const updatedUser = db.upgradeUserMembership(user.id, tier, days);
-        return res.json({ success: true, order, user: updatedUser });
+        return res.json({ success: true, order, user: updatedUser ? sanitizeUser(updatedUser) : undefined });
       }
     }
 
