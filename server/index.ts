@@ -4,7 +4,8 @@ import fs from 'fs';
 import jwt from 'jsonwebtoken';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
-import { db } from './src/db.js';
+import { PORT, IS_PROD } from './config.js';
+import { db } from '../src/db.js';
 import {
   UserProfile,
   ChatMessage,
@@ -13,8 +14,8 @@ import {
   MembershipTier,
   getEffectiveMembershipTier,
   getMembershipTierLabel,
-} from './src/types.js';
-import { GUEST_USER } from './src/data/initialData.js';
+} from '../src/types.js';
+import { GUEST_USER } from '../src/data/initialData.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'distilled_ai_studio_secret_key_2026';
 const JWT_EXPIRES_IN = '7d';
@@ -486,7 +487,6 @@ setInterval(() => {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
 
   app.use(express.json({ limit: '10mb' }));
   app.use('/assets', express.static(path.join(process.cwd(), 'assets')));
@@ -2036,7 +2036,7 @@ async function startServer() {
   });
 
   // 10. Vite Middleware for development / production
-  if (process.env.NODE_ENV !== 'production') {
+  if (!IS_PROD) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
