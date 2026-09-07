@@ -1,7 +1,8 @@
 import { Express } from 'express';
+import bcrypt from 'bcryptjs';
 import { db } from '../../src/db.js';
 import { AuthRequest, signToken, sanitizeUser } from '../middleware/auth.js';
-import { UserProfile, getEffectiveMembershipTier } from '../../src/types.js';
+import { getEffectiveMembershipTier } from '../../src/types.js';
 import { GUEST_USER } from '../../src/data/initialData.js';
 
 export function registerAuthRoutes(app: Express): void {
@@ -35,14 +36,10 @@ export function registerAuthRoutes(app: Express): void {
     }
 
     if (user) {
-      // 验证码/密码校验：如果该账号设置了密码或专属验证码，则校验是否一致
-      if (user.password && user.password.trim()) {
-        const requiredCode = user.password.trim();
-        if (cleanCode !== requiredCode) {
-          return res.status(400).json({ error: '登录密码或验证码错误，请重新输入' });
-        }
-      } else {
-        user.password = cleanCode;
+      // 密码校验：数据库存储 bcrypt 哈希，使用 compareSync 恒定时间比对（不再明文比较，不再"未设密码即存输入"）
+      const storedHash = (user.password || '').trim();
+      if (!storedHash || !bcrypt.compareSync(cleanCode, storedHash)) {
+        return res.status(400).json({ error: '登录密码或验证码错误，请重新输入' });
       }
 
       if (user.role === 'guest') {
@@ -69,80 +66,12 @@ export function registerAuthRoutes(app: Express): void {
       if (avatar) user.avatar = avatar;
       db.saveUser(user);
     } else {
-      // 未注册手机号自动创建账号（验证码免注册登录一体化）
-      const newId = 'usr_' + Math.floor(Math.random() * 899999 + 100000);
-      const suffix = cleanPhone.length >= 4 ? cleanPhone.slice(-4) : cleanPhone.padStart(4, '0');
-      user = {
-        id: newId,
-        unionId: 'union_' + newId,
-        phone: cleanPhone,
-        password: cleanCode,
-        nickname: (nickname || '').trim() || suffix,
-        avatar: avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
-        role: 'member',
-        membershipTier: 'free_member',
-        dailyMaxChats: freeMemberLimit,
-        dailyUsedCount: 0,
-        createdAt: new Date().toISOString().replace('T', ' ').substring(0, 19),
-        lastActiveDate: new Date().toISOString().split('T')[0],
-      };
-      db.saveUser(user);
+      // 仅管理员建号：不再自动注册（自助注册后门已关闭）
+      return res.status(404).json({ error: '该账号不存在，内测阶段账号由管理员统一开通，请联系管理员' });
     }
 
     const token = signToken(user);
     res.json({ success: true, user: { ...sanitizeUser(user), token }, token });
-  });
-
-  // 注册接口：专用于创建新账号并持久化至数据库
-  app.post('/api/auth/register', (req, res) => {
-    const { phone, code, nickname, avatar } = req.body;
-    const cleanPhone = (phone || '').trim();
-    if (!cleanPhone) {
-      return res.status(400).json({ error: '请输入手机号码' });
-    }
-    if (!/^\d{11}$/.test(cleanPhone)) {
-      return res.status(400).json({ error: '手机号码必须为11位阿拉伯数字' });
-    }
-    const cleanCode = (code || '').trim();
-    if (!cleanCode) {
-      return res.status(400).json({ error: '请输入6位短信验证码' });
-    }
-    if (!/^\d{6}$/.test(cleanCode)) {
-      return res.status(400).json({ error: '验证码必须为6位阿拉伯数字' });
-    }
-
-    // 检查手机号是否已被注册
-    let existing = db.getUserByPhone(cleanPhone);
-    if (!existing) {
-      const users = db.getUsers();
-      existing = users.find((u) => u.phone === cleanPhone);
-    }
-    if (existing) {
-      return res.status(400).json({ error: '该手机号码已注册，请直接前往登录' });
-    }
-
-    const config = db.getLLMConfig();
-    const freeMemberLimit = config.dailyLimits?.freeMember ?? 10;
-
-    const newId = 'usr_' + Math.floor(Math.random() * 899999 + 100000);
-    const suffix = cleanPhone.length >= 4 ? cleanPhone.slice(-4) : cleanPhone.padStart(4, '0');
-    const newUser: UserProfile = {
-      id: newId,
-      unionId: 'union_' + newId,
-      phone: cleanPhone,
-      password: cleanCode,
-      nickname: (nickname || '').trim() || suffix,
-      avatar: avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80',
-      role: 'member',
-      membershipTier: 'free_member',
-      dailyMaxChats: freeMemberLimit,
-      dailyUsedCount: 0,
-      createdAt: new Date().toISOString().replace('T', ' ').substring(0, 19),
-    };
-    db.saveUser(newUser);
-
-    const token = signToken(newUser);
-    res.json({ success: true, user: { ...sanitizeUser(newUser), token }, token, message: '注册成功' });
   });
 
   app.get('/api/auth/me', (req: AuthRequest, res) => {

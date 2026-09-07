@@ -2,9 +2,11 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { PORT, IS_PROD } from './config.js';
+import { db } from '../src/db.js';
 import { authMiddleware } from './middleware/auth.js';
 import { metrics } from './services/metrics.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { ensureAdminSeed } from './services/adminSeed.js';
 import { registerSkillsRoutes } from './routes/skills.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerPaymentRoutes } from './routes/payment.js';
@@ -35,6 +37,9 @@ async function startServer() {
     });
   });
 
+  // 等待 SQLite（WASM）初始化完成后再执行管理员种子，避免 this.db 未就绪导致 saveUser 空操作
+  await db.whenReady();
+  ensureAdminSeed();
   registerAuthRoutes(app);
   registerSkillsRoutes(app);
   registerChatRoutes(app);

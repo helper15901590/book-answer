@@ -33,9 +33,15 @@ export class CommercialSQLDatabase {
   private db: Database | null = null;
   private saveTimeout: NodeJS.Timeout | null = null;
   private isInitialized = false;
+  private initPromise: Promise<void>;
 
   constructor() {
-    this.initDatabase();
+    this.initPromise = this.initDatabase();
+  }
+
+  // 等待底层 SQLite（WASM）初始化完成；供启动期管理员种子等需即时读写数据库的逻辑使用
+  public whenReady(): Promise<void> {
+    return this.initPromise;
   }
 
   private async initDatabase(): Promise<void> {

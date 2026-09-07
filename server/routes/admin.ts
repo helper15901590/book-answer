@@ -1,4 +1,5 @@
 import { Express } from 'express';
+import bcrypt from 'bcryptjs';
 import fs from 'fs';
 import path from 'path';
 import { GoogleGenAI } from '@google/genai';
@@ -166,7 +167,7 @@ export function registerAdminRoutes(app: Express): void {
       id: userId,
       unionId,
       phone: cleanPhone,
-      password: cleanCode,
+      password: bcrypt.hashSync(cleanCode, 10),
       nickname: autoNickname,
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&h=120&q=80',
       role: assignedTier === 'guest' ? 'guest' : 'member',
@@ -220,7 +221,7 @@ export function registerAdminRoutes(app: Express): void {
     // 更新验证码
     const newCode = (code !== undefined ? code : password);
     if (newCode && typeof newCode === 'string' && newCode.trim()) {
-      user.password = newCode.trim();
+      user.password = bcrypt.hashSync(newCode.trim(), 10);
     }
 
     // 更新会员等级（自动联动有效期与每日模型调用上限）
