@@ -78,7 +78,7 @@
 **Files:**
 - Create: `server/config.ts`、`server/index.ts`
 - Modify: `package.json`（scripts.dev / scripts.build）
-- Delete: 暂不删 `server.ts`（Task 6 末尾删除；本任务起它不再是入口）
+- Move: `server.ts` → `server/index.ts`（git mv；根目录不再保留 server.ts）
 
 **Interfaces:**
 - Produces: `server/config.ts` 导出 `PORT: number`、`IS_PROD: boolean`；`server/index.ts` 为唯一后端入口（`startServer(): Promise<void>` 自执行）。
