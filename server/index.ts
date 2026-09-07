@@ -3,7 +3,7 @@ import path from 'path';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
-import { PORT, IS_PROD, DATA_DIR } from './config.js';
+import { PORT, IS_PROD, DATA_DIR, TRUST_PROXY } from './config.js';
 import { db } from './db.js';
 import { authMiddleware } from './middleware/auth.js';
 import { metrics } from './services/metrics.js';
@@ -16,6 +16,9 @@ import { registerConfigRoutes } from './routes/config.js';
 
 async function startServer() {
   const app = express();
+
+  // 反向代理部署时信任第一跳，使限流按 X-Forwarded-For 计 IP（须在挂载限流器前设置）
+  if (TRUST_PROXY) app.set('trust proxy', 1);
 
   // 安全头（CSP 关闭：避免破坏现有内联样式与 unsplash 外链封面，UI 硬约束）
   app.use(helmet({ contentSecurityPolicy: false }));

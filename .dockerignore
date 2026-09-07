@@ -1,0 +1,15 @@
+# 构建上下文为仓库根（compose context: ..）。
+# 必须排除宿主机 node_modules：否则 COPY . . 会用 Windows 原生二进制覆盖镜像内 npm ci 产物（better-sqlite3 将无法加载）
+node_modules
+dist
+data
+assets
+.git
+.superpowers
+# 严禁把密钥文件烧进镜像层
+.env*
+!.env.example
+*.log
+commercial.sqlite
+# 部署时才生成的实际 Caddyfile（含真实域名），模板即可
+docker/Caddyfile

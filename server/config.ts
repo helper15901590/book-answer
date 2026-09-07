@@ -23,3 +23,7 @@ export const JWT_SECRET = (() => {
 // 管理员种子账号（首次启动创建，见 Task 10）
 export const ADMIN_PHONE = (process.env.ADMIN_PHONE || '').trim();
 export const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || '').trim();
+
+// 反向代理（Caddy）部署时置 1，使 express-rate-limit 以 X-Forwarded-For 计 IP；
+// 直连部署严禁开启，否则客户端可伪造头绕过限流
+export const TRUST_PROXY = process.env.TRUST_PROXY === '1';
