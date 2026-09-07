@@ -10,6 +10,7 @@ import { ensureAdminSeed } from './services/adminSeed.js';
 import { registerSkillsRoutes } from './routes/skills.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerAdminRoutes } from './routes/admin.js';
+import { registerConfigRoutes } from './routes/config.js';
 
 async function startServer() {
   const app = express();
@@ -43,6 +44,7 @@ async function startServer() {
   registerSkillsRoutes(app);
   registerChatRoutes(app);
   registerAdminRoutes(app);
+  registerConfigRoutes(app);
 
   if (!IS_PROD) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });

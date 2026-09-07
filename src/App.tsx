@@ -52,7 +52,7 @@ export default function App() {
       })
       .catch((e) => console.warn('Sync skills error:', e));
 
-    fetch('/api/admin/llm-config')
+    fetch('/api/config/public')
       .then((res) => res.json())
       .then((data) => {
         if (data.llmConfig) {
