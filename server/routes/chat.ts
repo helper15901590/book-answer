@@ -10,7 +10,7 @@ import { GUEST_USER } from '../../src/data/initialData.js';
 import { ChatMessage, cleanBookTitle } from '../../src/types.js';
 
 export function registerChatRoutes(app: Express): void {
-  // 5. Chat Sessions APIs (User-isolated)
+  // 会话管理 API（按用户隔离）
   app.get('/api/chat/sessions', (req: AuthRequest, res) => {
     const uid = req.user?.id || (typeof req.query.userId === 'string' ? req.query.userId : undefined);
     const sessions = uid ? db.getChatSessions(uid) : [];
@@ -60,7 +60,7 @@ export function registerChatRoutes(app: Express): void {
     res.json({ success: deleted });
   });
 
-  // 6. Native SSE (Server-Sent Events) High-Concurrency Streaming Endpoint
+  // SSE（Server-Sent Events）流式对话端点
   app.post('/api/chat/stream', async (req: AuthRequest, res) => {
     const { sessionId, skillId, messageText, userId } = req.body;
     if (!sessionId || !messageText) {

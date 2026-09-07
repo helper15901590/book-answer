@@ -2,7 +2,7 @@ import { Express, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { db } from '../../src/db.js';
 import { AuthRequest } from '../middleware/auth.js';
-import { requireAdmin } from '../middleware/admin.js';
+import { requireAdmin, isAdminUser } from '../middleware/admin.js';
 import { generateRecommendedQuestionsFromLLM } from '../services/llm/questions.js';
 import { cleanBookTitle } from '../../src/types.js';
 
@@ -41,7 +41,7 @@ async function invokeGenerateQuestions(req: AuthRequest, res: Response, canWrite
 }
 
 export function registerSkillsRoutes(app: Express): void {
-  // 4. Skills & Distilled Books Market APIs
+  // 书籍市场（技能）API
   app.get('/api/skills', (req, res) => {
     const { search, category } = req.query;
     let skills = db.getSkills();
@@ -86,7 +86,7 @@ export function registerSkillsRoutes(app: Express): void {
 
   // 公开路径：限流 10 次/时/IP；skillId 落库仅管理员生效（防未授权篡改书籍数据）
   app.post('/api/skills/generate-questions', questionsLimiter, async (req: AuthRequest, res) => {
-    const canWrite = req.user?.role === 'admin' || !!req.user?.isAdmin;
+    const canWrite = isAdminUser(req.user);
     await invokeGenerateQuestions(req, res, canWrite);
   });
 

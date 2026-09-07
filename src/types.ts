@@ -13,7 +13,6 @@ export interface DailyLimitsConfig {
   monthlyMember?: number;
   quarterlyMember?: number;
   yearlyMember?: number;
-  buyoutUser?: number; // legacy backward compatibility
 }
 
 export interface MembershipPlanConfig {
@@ -32,23 +31,16 @@ export interface UserProfile {
   role: UserRole;
   membershipTier?: MembershipTier;
   membershipExpiresAt?: string; // ISO string for paid VIP expiration
-  unlockedSkillIds?: string[]; // Kept for backward compatibility
   dailyMaxChats?: number;
   dailyUsedCount?: number;
   monthlyUsedCount?: number;
   guestUsedCount?: number;
-  buyoutUsedCount?: number; // Kept for backward compatibility
-  buyoutUsageMap?: Record<string, number>;
   isAdmin?: boolean;
   createdAt?: string;
   lastActiveDate?: string;
   lastActiveMonth?: string;
   token?: string;
-  invitedCount?: number;
-  referralCode?: string;
 }
-
-export type PriceType = 'free_trial' | 'buyout';
 
 export interface Skill {
   id: string;
@@ -58,8 +50,6 @@ export interface Skill {
   coverUrl: string;
   description: string;
   tags: string[];
-  priceType: PriceType;
-  buyoutPrice?: number;
   systemPrompt: string;
   catalogContent?: string;
   bookContent?: string;
@@ -105,8 +95,6 @@ export interface LLMConfig {
   timeoutSec: number;
   maxTokens?: number;
   deepseekApiKey: string;
-  proxyBufferingOff?: boolean;
-  simulateTimeout?: boolean;
   dailyLimits?: DailyLimitsConfig;
   membershipPlans?: MembershipPlanConfig;
   agreements?: LegalAgreements;
@@ -120,7 +108,7 @@ export interface LegalAgreements {
   updatedAt?: string;
 }
 
-export type OrderPlanType = 'monthly' | 'quarterly' | 'yearly' | 'buyout';
+export type OrderPlanType = 'monthly' | 'quarterly' | 'yearly';
 
 export interface OrderLog {
   id: string;
@@ -132,7 +120,7 @@ export interface OrderLog {
   planType?: OrderPlanType;
   planName?: string;
   amount: number;
-  type?: 'membership' | 'buyout';
+  type?: 'membership';
   paymentMethod: 'wechat' | 'alipay' | 'card';
   status: 'pending' | 'success' | 'failed';
   createdAt: string;

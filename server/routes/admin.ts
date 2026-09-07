@@ -12,7 +12,7 @@ import { resolveGeminiModelName } from '../services/llm/gemini.js';
 import { UserProfile, MembershipTier, cleanBookTitle } from '../../src/types.js';
 
 export function registerAdminRoutes(app: Express): void {
-  // 2. Upload asset API
+  // 素材上传 API
   app.post('/api/admin/upload-asset', requireAdmin, async (req, res) => {
     try {
       const { fileName, fileData } = req.body;
@@ -40,8 +40,7 @@ export function registerAdminRoutes(app: Express): void {
     }
   });
 
-  // 8. Tags Management APIs
-
+  // 标签管理 API
   app.post('/api/admin/tags', requireAdmin, (req, res) => {
     const { tags, renamedMap, deletedTags } = req.body;
     if (!Array.isArray(tags)) {
@@ -95,7 +94,7 @@ export function registerAdminRoutes(app: Express): void {
     res.json({ success: true, tags: savedTags });
   });
 
-  // 9. Admin Operations APIs
+  // 后台管理运营 API
   app.get('/api/admin/stats', requireAdmin, (req, res) => {
     const baseStats = db.getAdminStats();
     res.json({
@@ -176,12 +175,8 @@ export function registerAdminRoutes(app: Express): void {
       dailyMaxChats: maxChats,
       dailyUsedCount: 0,
       guestUsedCount: 0,
-      buyoutUsedCount: 0,
-      buyoutUsageMap: {},
-      unlockedSkillIds: [],
       isAdmin: false,
       lastActiveDate: new Date().toISOString().slice(0, 10),
-      invitedCount: 0,
       createdAt: new Date().toISOString(),
     };
 
@@ -332,8 +327,6 @@ export function registerAdminRoutes(app: Express): void {
       category: category,
       coverUrl: skill.coverUrl || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80',
       tags: rawTags,
-      priceType: skill.priceType || 'free_trial',
-      buyoutPrice: Number(skill.buyoutPrice) || 19.9,
       systemPrompt: skill.systemPrompt || '',
       catalogContent: skill.catalogContent || '# 目录\n- 第一章：核心阐释\n- 第二章：应用思考',
       bookContent: skill.bookContent || '',

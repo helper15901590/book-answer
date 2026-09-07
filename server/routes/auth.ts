@@ -10,7 +10,7 @@ import { GUEST_USER } from '../../src/data/initialData.js';
 const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: '尝试过于频繁，请稍后再试' } });
 
 export function registerAuthRoutes(app: Express): void {
-  // 3. Auth APIs (Multi-tenant JWT stateless session)
+  // 认证 API（JWT 无状态会话）
   // 登录接口：严禁在此自动注册新账号，仅在现有数据库中匹配已存在用户
   app.post('/api/auth/login', authLimiter, (req, res) => {
     const { phone, code, nickname, avatar } = req.body;

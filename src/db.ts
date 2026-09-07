@@ -62,7 +62,6 @@ export class CommercialSQLDatabase {
       this.createTables();
       this.migrateSchemaIfNeeded();
       this.createIndices();
-      this.cleanResidualMockData();
       this.seedInitialData();
       this.isInitialized = true;
       this.persistToDisk();
@@ -89,13 +88,8 @@ export class CommercialSQLDatabase {
         daily_max_chats INTEGER DEFAULT 10,
         daily_used_count INTEGER DEFAULT 0,
         guest_used_count INTEGER DEFAULT 0,
-        buyout_used_count INTEGER DEFAULT 0,
-        buyout_usage_map TEXT DEFAULT '{}',
-        unlocked_skill_ids TEXT DEFAULT '[]',
         is_admin INTEGER DEFAULT 0,
         last_active_date TEXT,
-        invited_count INTEGER DEFAULT 0,
-        referral_code TEXT,
         created_at TEXT DEFAULT (datetime('now'))
       );
 
@@ -107,8 +101,6 @@ export class CommercialSQLDatabase {
         category TEXT NOT NULL,
         cover_url TEXT,
         tags TEXT DEFAULT '[]',
-        price_type TEXT DEFAULT 'free_trial',
-        buyout_price REAL DEFAULT 19.9,
         system_prompt TEXT,
         catalog_content TEXT,
         book_content TEXT,
@@ -179,12 +171,6 @@ export class CommercialSQLDatabase {
         if (!columnNames.includes('password')) {
           this.db.run(`ALTER TABLE users ADD COLUMN password TEXT`);
         }
-        if (!columnNames.includes('buyout_used_count')) {
-          this.db.run(`ALTER TABLE users ADD COLUMN buyout_used_count INTEGER DEFAULT 0`);
-        }
-        if (!columnNames.includes('buyout_usage_map')) {
-          this.db.run(`ALTER TABLE users ADD COLUMN buyout_usage_map TEXT DEFAULT '{}'`);
-        }
       }
 
       // Check orders table columns
@@ -222,24 +208,6 @@ export class CommercialSQLDatabase {
     }
   }
 
-  private cleanResidualMockData(): void {
-    if (!this.db) return;
-    try {
-      // Clean legacy mock users
-      this.db.run(`
-        DELETE FROM users 
-        WHERE phone IN ('13800138921', '55555555555', '66666666666', '77777777777', '99999999999', '11111111111', '33333333333')
-           OR id IN ('usr_883921', 'usr_guest_anon')
-           OR nickname IN ('商业读者_8921', '55555555555', '66666666666', '77777777777', '99999999999', '11111111111', '33333333333', '1111', '1112', '4444')
-      `);
-      // Clean invalid test skills and reset fake inflated metrics on initial skills
-      this.db.run(`DELETE FROM skills WHERE id = '1' OR title = '1'`);
-      this.db.run(`UPDATE skills SET chat_count = 0, search_count = 0 WHERE chat_count > 10000 OR search_count > 10000`);
-    } catch (e) {
-      console.warn('Mock data cleanup check notice:', e);
-    }
-  }
-
   private seedInitialData(): void {
     if (!this.db) return;
 
@@ -251,8 +219,8 @@ export class CommercialSQLDatabase {
       const existing = this.db.exec(`SELECT id FROM skills WHERE id = ?`, [s.id]);
       if (!existing || !existing[0]?.values?.length) {
         this.db.run(
-          `INSERT INTO skills (id, title, author, description, category, cover_url, tags, price_type, buyout_price, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             s.id,
             s.title,
@@ -261,8 +229,6 @@ export class CommercialSQLDatabase {
             s.category,
             s.coverUrl,
             JSON.stringify(s.tags || []),
-            s.priceType || 'free_trial',
-            s.buyoutPrice || 19.9,
             s.systemPrompt || '',
             s.catalogContent || '',
             s.bookContent || '',
@@ -358,8 +324,8 @@ export class CommercialSQLDatabase {
     const membershipTier = user.membershipTier || (user.role === 'guest' ? 'guest' : 'free_member');
 
     this.db.run(
-      `INSERT OR REPLACE INTO users (id, union_id, phone, password, nickname, avatar, role, membership_tier, membership_expires_at, daily_max_chats, daily_used_count, guest_used_count, buyout_used_count, buyout_usage_map, unlocked_skill_ids, is_admin, last_active_date, invited_count, referral_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO users (id, union_id, phone, password, nickname, avatar, role, membership_tier, membership_expires_at, daily_max_chats, daily_used_count, guest_used_count, is_admin, last_active_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         user.id,
         user.unionId || '',
@@ -373,13 +339,8 @@ export class CommercialSQLDatabase {
         user.dailyMaxChats || 10,
         user.dailyUsedCount || 0,
         user.guestUsedCount || 0,
-        user.buyoutUsedCount || 0,
-        JSON.stringify(user.buyoutUsageMap || {}),
-        JSON.stringify(user.unlockedSkillIds || []),
         user.isAdmin ? 1 : 0,
         user.lastActiveDate || getTodayString(),
-        user.invitedCount || 0,
-        user.referralCode || '',
       ]
     );
 
@@ -467,13 +428,8 @@ export class CommercialSQLDatabase {
       dailyMaxChats: row.daily_max_chats,
       dailyUsedCount: row.daily_used_count,
       guestUsedCount: row.guest_used_count,
-      buyoutUsedCount: row.buyout_used_count,
-      buyoutUsageMap: typeof row.buyout_usage_map === 'string' ? JSON.parse(row.buyout_usage_map || '{}') : row.buyout_usage_map,
-      unlockedSkillIds: typeof row.unlocked_skill_ids === 'string' ? JSON.parse(row.unlocked_skill_ids || '[]') : row.unlocked_skill_ids,
       isAdmin: Boolean(row.is_admin),
       lastActiveDate: row.last_active_date,
-      invitedCount: row.invited_count,
-      referralCode: row.referral_code || undefined,
       createdAt: row.created_at,
     };
   }
@@ -499,21 +455,17 @@ export class CommercialSQLDatabase {
       user.lastActiveDate = today;
       user.dailyUsedCount = 0;
       user.guestUsedCount = 0;
-      user.buyoutUsedCount = 0;
-      user.buyoutUsageMap = {};
       modified = true;
     }
 
     if (modified && this.db) {
       this.db.run(
-        `UPDATE users SET membership_tier = ?, daily_max_chats = ?, daily_used_count = ?, guest_used_count = ?, buyout_used_count = ?, buyout_usage_map = ?, last_active_date = ? WHERE id = ?`,
+        `UPDATE users SET membership_tier = ?, daily_max_chats = ?, daily_used_count = ?, guest_used_count = ?, last_active_date = ? WHERE id = ?`,
         [
           user.membershipTier,
           user.dailyMaxChats || 10,
           user.dailyUsedCount || 0,
           user.guestUsedCount || 0,
-          user.buyoutUsedCount || 0,
-          JSON.stringify(user.buyoutUsageMap || {}),
           user.lastActiveDate,
           user.id,
         ]
@@ -543,8 +495,6 @@ export class CommercialSQLDatabase {
         category: obj.category,
         coverUrl: obj.cover_url,
         tags: typeof obj.tags === 'string' ? JSON.parse(obj.tags || '[]') : obj.tags,
-        priceType: obj.price_type || 'free_trial',
-        buyoutPrice: obj.buyout_price || 19.9,
         systemPrompt: obj.system_prompt || '',
         catalogContent: obj.catalog_content || '',
         bookContent: obj.book_content || '',
@@ -564,8 +514,8 @@ export class CommercialSQLDatabase {
   public saveSkill(skill: Skill): Skill {
     if (!this.db) return skill;
     this.db.run(
-      `INSERT OR REPLACE INTO skills (id, title, author, description, category, cover_url, tags, price_type, buyout_price, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         skill.id,
         skill.title,
@@ -574,8 +524,6 @@ export class CommercialSQLDatabase {
         skill.category,
         skill.coverUrl,
         JSON.stringify(skill.tags || []),
-        skill.priceType || 'free_trial',
-        skill.buyoutPrice || 19.9,
         skill.systemPrompt || '',
         skill.catalogContent || '',
         skill.bookContent || '',
@@ -762,95 +710,6 @@ export class CommercialSQLDatabase {
     }
     stmt.free();
     return orders;
-  }
-
-  public getOrderByTradeNo(tradeNo: string): OrderLog | undefined {
-    if (!this.db) return undefined;
-    const stmt = this.db.prepare(`SELECT * FROM orders WHERE trade_no = ? OR id = ? LIMIT 1`);
-    stmt.bind([tradeNo, tradeNo]);
-    if (stmt.step()) {
-      const obj = stmt.getAsObject();
-      stmt.free();
-      return {
-        id: obj.id as string,
-        tradeNo: obj.trade_no as string,
-        userId: obj.user_id as string,
-        unionId: (obj.union_id as string) || undefined,
-        skillId: (obj.skill_id as string) || undefined,
-        skillTitle: (obj.skill_title as string) || undefined,
-        planType: (obj.plan_type as any) || 'monthly',
-        planName: (obj.plan_name as string) || '月度会员',
-        amount: Number(obj.amount),
-        type: (obj.type as any) || 'membership',
-        paymentMethod: obj.payment_method as any,
-        status: obj.status as any,
-        paidAt: (obj.paid_at as string) || undefined,
-        createdAt: obj.created_at as string,
-      };
-    }
-    stmt.free();
-    return undefined;
-  }
-
-  public createOrder(order: OrderLog): OrderLog {
-    if (!this.db) return order;
-    this.db.run(
-      `INSERT OR REPLACE INTO orders (id, trade_no, transaction_id, user_id, union_id, skill_id, skill_title, plan_type, plan_name, amount, type, payment_method, status, paid_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        order.id,
-        order.tradeNo,
-        '',
-        order.userId,
-        order.unionId || '',
-        order.skillId || '',
-        order.skillTitle || '',
-        order.planType || 'monthly',
-        order.planName || '月度会员',
-        order.amount,
-        order.type || 'membership',
-        order.paymentMethod || 'wechat',
-        order.status || 'pending',
-        order.paidAt || '',
-        order.createdAt || new Date().toISOString(),
-      ]
-    );
-    this.scheduleSave();
-    return order;
-  }
-
-  public updateOrderStatus(tradeNo: string, status: 'success' | 'failed'): OrderLog | undefined {
-    const order = this.getOrderByTradeNo(tradeNo);
-    if (!order || !this.db) return undefined;
-
-    order.status = status;
-    if (status === 'success') {
-      order.paidAt = new Date().toISOString();
-      if (order.userId) {
-        let tier: MembershipTier = 'monthly_member';
-        let months = 1;
-
-        if (order.planType === 'quarterly') {
-          tier = 'quarterly_member';
-          months = 3;
-        } else if (order.planType === 'yearly') {
-          tier = 'yearly_member';
-          months = 12;
-        } else {
-          tier = 'monthly_member';
-          months = 1;
-        }
-
-        this.upgradeUserMembership(order.userId, tier, months);
-      }
-    }
-
-    this.db.run(
-      `UPDATE orders SET status = ?, paid_at = ? WHERE trade_no = ? OR id = ?`,
-      [status, order.paidAt || '', tradeNo, tradeNo]
-    );
-    this.scheduleSave();
-    return order;
   }
 
   public clearAllOrders(): void {

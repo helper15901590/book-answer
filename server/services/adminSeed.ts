@@ -2,10 +2,11 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { db } from '../../src/db.js';
 import { ADMIN_PHONE, ADMIN_PASSWORD } from '../config.js';
+import { isAdminUser } from '../middleware/admin.js';
 
 // 幂等确保存在管理员账号：优先环境变量，缺省生成随机 6 位数字密码并打印一次
 export function ensureAdminSeed(): void {
-  const admins = db.getUsers().filter((u) => u.role === 'admin' || u.isAdmin);
+  const admins = db.getUsers().filter((u) => isAdminUser(u));
   if (admins.length > 0) return;
 
   const phone = ADMIN_PHONE || '13900000000';
