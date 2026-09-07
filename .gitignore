@@ -8,4 +8,4 @@ coverage/
 !.env.example
 # 数据库含用户凭据，严禁入库；运行数据统一落 data/
 commercial.sqlite
-data/
+/data/
