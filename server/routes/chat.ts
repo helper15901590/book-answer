@@ -25,7 +25,7 @@ export function registerChatRoutes(app: Express): void {
     }
 
     const newSession = {
-      id: 'session-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+      id: 'session-' + crypto.randomUUID(),
       userId: uid || undefined,
       skillId: skill.id,
       skillTitle: skill.title,

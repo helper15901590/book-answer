@@ -2,8 +2,8 @@ import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { db } from '../../src/db.js';
 import { UserProfile } from '../../src/types.js';
+import { JWT_SECRET } from '../config.js';
 
-export const JWT_SECRET = process.env.JWT_SECRET || 'distilled_ai_studio_secret_key_2026';
 export const JWT_EXPIRES_IN = '7d';
 
 // Extend Express Request to include authenticated user
@@ -34,8 +34,6 @@ export function extractUserFromRequest(req: Request): UserProfile | null {
     token = authHeader.substring(7).trim();
   } else if (req.headers['x-auth-token'] && typeof req.headers['x-auth-token'] === 'string') {
     token = req.headers['x-auth-token'].trim();
-  } else if (req.query.token && typeof req.query.token === 'string') {
-    token = req.query.token.trim();
   }
 
   if (!token) return null;

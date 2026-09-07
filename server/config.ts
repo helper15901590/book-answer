@@ -5,3 +5,17 @@ dotenv.config({ path: ['.env.local', '.env'] });
 
 export const IS_PROD = process.env.NODE_ENV === 'production';
 export const PORT = Number(process.env.PORT) || 3000;
+
+// JWT 签名密钥：生产环境必须显式提供，否则拒绝启动（fail-fast）
+export const JWT_SECRET = (() => {
+  const secret = (process.env.JWT_SECRET || '').trim();
+  if (IS_PROD && secret.length < 16) {
+    console.error('FATAL: 生产环境必须设置 JWT_SECRET 环境变量（≥16 字符）');
+    process.exit(1);
+  }
+  return secret || 'distilled_ai_studio_secret_key_2026'; // 仅限本地开发
+})();
+
+// 管理员种子账号（首次启动创建，见 Task 10）
+export const ADMIN_PHONE = (process.env.ADMIN_PHONE || '').trim();
+export const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || '').trim();

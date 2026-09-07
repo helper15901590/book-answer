@@ -132,8 +132,8 @@ export function registerAdminRoutes(app: Express): void {
 
     const suffix = cleanPhone.length >= 4 ? cleanPhone.slice(-4) : cleanPhone.padStart(4, '0');
     const autoNickname = suffix;
-    const userId = 'usr_' + (cleanPhone ? cleanPhone.slice(-8) : Date.now().toString().slice(-8) + Math.floor(Math.random() * 1000));
-    const unionId = 'wx_internal_' + Date.now() + Math.floor(Math.random() * 1000);
+    const userId = 'usr_' + crypto.randomUUID();
+    const unionId = 'union_' + crypto.randomUUID();
     const assignedTier: MembershipTier = membershipTier || 'free_member';
     
     // 跟随后台统一配置的会员有效周期
