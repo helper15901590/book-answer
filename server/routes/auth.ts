@@ -1,14 +1,18 @@
 import { Express } from 'express';
 import bcrypt from 'bcryptjs';
+import rateLimit from 'express-rate-limit';
 import { db } from '../../src/db.js';
 import { AuthRequest, signToken, sanitizeUser } from '../middleware/auth.js';
 import { getEffectiveMembershipTier } from '../../src/types.js';
 import { GUEST_USER } from '../../src/data/initialData.js';
 
+// 登录限流：10 次/分/IP（防撞库/暴力破解）
+const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: '尝试过于频繁，请稍后再试' } });
+
 export function registerAuthRoutes(app: Express): void {
   // 3. Auth APIs (Multi-tenant JWT stateless session)
   // 登录接口：严禁在此自动注册新账号，仅在现有数据库中匹配已存在用户
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', authLimiter, (req, res) => {
     const { phone, code, nickname, avatar } = req.body;
     const cleanPhone = (phone || '').trim();
     if (!cleanPhone) {

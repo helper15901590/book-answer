@@ -1,9 +1,13 @@
 import { Express, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { db } from '../../src/db.js';
 import { AuthRequest } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/admin.js';
 import { generateRecommendedQuestionsFromLLM } from '../services/llm/questions.js';
 import { cleanBookTitle } from '../../src/types.js';
+
+// 公开问题生成限流：10 次/时/IP（LLM 成本敏感；管理路径不挂此限流，防管理员自锁）
+const questionsLimiter = rateLimit({ windowMs: 3600_000, limit: 10, message: { error: '请求过于频繁，请稍后再试' } });
 
 // generate-questions 共享处理体：canWrite 控制 skillId 推荐问题是否允许落库（防未授权篡改书籍数据）
 async function invokeGenerateQuestions(req: AuthRequest, res: Response, canWrite: boolean): Promise<void> {
@@ -80,8 +84,8 @@ export function registerSkillsRoutes(app: Express): void {
     res.json({ success: true, skill });
   });
 
-  // 公开路径：限流由 Task 13 挂载；skillId 落库仅管理员生效（防未授权篡改书籍数据）
-  app.post('/api/skills/generate-questions', async (req: AuthRequest, res) => {
+  // 公开路径：限流 10 次/时/IP；skillId 落库仅管理员生效（防未授权篡改书籍数据）
+  app.post('/api/skills/generate-questions', questionsLimiter, async (req: AuthRequest, res) => {
     const canWrite = req.user?.role === 'admin' || !!req.user?.isAdmin;
     await invokeGenerateQuestions(req, res, canWrite);
   });

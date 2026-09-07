@@ -1,5 +1,7 @@
 import express from 'express';
 import path from 'path';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { PORT, IS_PROD } from './config.js';
 import { db } from '../src/db.js';
@@ -14,6 +16,11 @@ import { registerConfigRoutes } from './routes/config.js';
 
 async function startServer() {
   const app = express();
+
+  // 安全头（CSP 关闭：避免破坏现有内联样式与 unsplash 外链封面，UI 硬约束）
+  app.use(helmet({ contentSecurityPolicy: false }));
+  // 全局限流：300 次/分/IP
+  app.use(rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false }));
 
   app.use(express.json({ limit: '10mb' }));
   app.use('/assets', express.static(path.join(process.cwd(), 'assets')));
@@ -45,6 +52,11 @@ async function startServer() {
   registerChatRoutes(app);
   registerAdminRoutes(app);
   registerConfigRoutes(app);
+
+  // 未匹配的 /api/* 请求返回 JSON 404（防止落入 SPA catch-all 返回 index.html 200）
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Not Found' });
+  });
 
   if (!IS_PROD) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
