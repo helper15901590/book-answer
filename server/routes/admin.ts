@@ -3,7 +3,8 @@ import bcrypt from 'bcryptjs';
 import fs from 'fs';
 import path from 'path';
 import { GoogleGenAI } from '@google/genai';
-import { db } from '../../src/db.js';
+import { db } from '../db.js';
+import { DATA_DIR } from '../config.js';
 import { metrics } from '../services/metrics.js';
 import { requireAdmin } from '../middleware/admin.js';
 import { sanitizeUser } from '../middleware/auth.js';
@@ -20,7 +21,7 @@ export function registerAdminRoutes(app: Express): void {
         return res.status(400).json({ error: 'Missing fileName or fileData' });
       }
 
-      const assetsDir = path.join(process.cwd(), 'assets');
+      const assetsDir = path.join(DATA_DIR, 'assets');
       if (!fs.existsSync(assetsDir)) {
         fs.mkdirSync(assetsDir, { recursive: true });
       }

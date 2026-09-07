@@ -1,10 +1,14 @@
 import dotenv from 'dotenv';
+import path from 'path';
 
 // 本地开发加载 .env.local / .env（生产由容器环境变量注入，文件不存在时静默跳过）
 dotenv.config({ path: ['.env.local', '.env'] });
 
 export const IS_PROD = process.env.NODE_ENV === 'production';
 export const PORT = Number(process.env.PORT) || 3000;
+
+// 运行数据根目录（数据库/上传素材/备份），容器部署时挂载持久卷
+export const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 
 // JWT 签名密钥：生产环境必须显式提供，否则拒绝启动（fail-fast）
 export const JWT_SECRET = (() => {

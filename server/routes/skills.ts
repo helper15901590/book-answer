@@ -1,6 +1,6 @@
 import { Express, Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import { db } from '../../src/db.js';
+import { db } from '../db.js';
 import { AuthRequest } from '../middleware/auth.js';
 import { requireAdmin, isAdminUser } from '../middleware/admin.js';
 import { generateRecommendedQuestionsFromLLM } from '../services/llm/questions.js';

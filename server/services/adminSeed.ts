@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { db } from '../../src/db.js';
+import { db } from '../db.js';
 import { ADMIN_PHONE, ADMIN_PASSWORD } from '../config.js';
 import { isAdminUser } from '../middleware/admin.js';
 

@@ -1,5 +1,5 @@
 import { Express } from 'express';
-import { db } from '../../src/db.js';
+import { db } from '../db.js';
 import { AuthRequest, sanitizeUser } from '../middleware/auth.js';
 import { metrics } from '../services/metrics.js';
 import { checkAndConsumeQuota } from '../services/quota.js';

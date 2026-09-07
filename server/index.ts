@@ -3,8 +3,8 @@ import path from 'path';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
-import { PORT, IS_PROD } from './config.js';
-import { db } from '../src/db.js';
+import { PORT, IS_PROD, DATA_DIR } from './config.js';
+import { db } from './db.js';
 import { authMiddleware } from './middleware/auth.js';
 import { metrics } from './services/metrics.js';
 import { registerAuthRoutes } from './routes/auth.js';
@@ -23,7 +23,7 @@ async function startServer() {
   app.use(rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false }));
 
   app.use(express.json({ limit: '10mb' }));
-  app.use('/assets', express.static(path.join(process.cwd(), 'assets')));
+  app.use('/assets', express.static(path.join(DATA_DIR, 'assets')));
 
   // 请求计数
   app.use((req, res, next) => {
@@ -44,8 +44,7 @@ async function startServer() {
     });
   });
 
-  // 等待 SQLite（WASM）初始化完成后再执行管理员种子，避免 this.db 未就绪导致 saveUser 空操作
-  await db.whenReady();
+  // better-sqlite3 同步初始化，db 导入即就绪，直接执行管理员种子（须在注册路由前）
   ensureAdminSeed();
   registerAuthRoutes(app);
   registerSkillsRoutes(app);
@@ -73,9 +72,21 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Enterprise Commercial Server running on http://0.0.0.0:${PORT}`);
   });
+
+  // 容器停止/重启时优雅退出：停止接流 → 关闭数据库
+  for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(sig, () => {
+      console.log(`收到 ${sig}，开始优雅关闭…`);
+      server.close(() => {
+        db.close();
+        process.exit(0);
+      });
+      setTimeout(() => process.exit(1), 10_000).unref();
+    });
+  }
 }
 
 startServer();

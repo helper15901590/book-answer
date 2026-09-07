@@ -1,7 +1,7 @@
 import { Express } from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { db } from '../../src/db.js';
+import { db } from '../db.js';
 import { AuthRequest, signToken, sanitizeUser } from '../middleware/auth.js';
 import { getEffectiveMembershipTier } from '../../src/types.js';
 import { GUEST_USER } from '../../src/data/initialData.js';

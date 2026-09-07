@@ -1,4 +1,4 @@
-import { db } from '../../src/db.js';
+import { db } from '../db.js';
 import { UserProfile, MembershipTier, getEffectiveMembershipTier } from '../../src/types.js';
 
 // =========================================================================

@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { db } from '../../src/db.js';
+import { db } from '../db.js';
 import { UserProfile } from '../../src/types.js';
 import { JWT_SECRET } from '../config.js';
 

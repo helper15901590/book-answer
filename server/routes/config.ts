@@ -1,5 +1,5 @@
 import { Express } from 'express';
-import { db } from '../../src/db.js';
+import { db } from '../db.js';
 
 // 公开配置端点：仅暴露前端启动所需的非敏感配置，绝不返回 apiKey / apiBaseUrl
 export function registerConfigRoutes(app: Express): void {

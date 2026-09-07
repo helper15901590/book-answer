@@ -1,4 +1,4 @@
-import { db } from '../../../src/db.js';
+import { db } from '../../db.js';
 import { cleanBookTitle } from '../../../src/types.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from './sanitize.js';
 import { callGeminiResponse, resolveGeminiModelName } from './gemini.js';
