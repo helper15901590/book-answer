@@ -9,7 +9,6 @@ import { registerAuthRoutes } from './routes/auth.js';
 import { ensureAdminSeed } from './services/adminSeed.js';
 import { registerSkillsRoutes } from './routes/skills.js';
 import { registerChatRoutes } from './routes/chat.js';
-import { registerPaymentRoutes } from './routes/payment.js';
 import { registerAdminRoutes } from './routes/admin.js';
 
 async function startServer() {
@@ -43,7 +42,6 @@ async function startServer() {
   registerAuthRoutes(app);
   registerSkillsRoutes(app);
   registerChatRoutes(app);
-  registerPaymentRoutes(app);
   registerAdminRoutes(app);
 
   if (!IS_PROD) {
