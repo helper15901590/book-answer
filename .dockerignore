@@ -6,10 +6,14 @@ data
 assets
 .git
 .superpowers
+# 本地权限配置与内部文档：不属于镜像（settings.local.json 可能含敏感配置）
+.claude
+docs
 # 严禁把密钥文件烧进镜像层
 .env*
 !.env.example
 *.log
-commercial.sqlite
+# 含 -wal/-shm 变体：脏遗留检出不得把凭据哈希烧进镜像
+commercial.sqlite*
 # 部署时才生成的实际 Caddyfile（含真实域名），模板即可
 docker/Caddyfile
