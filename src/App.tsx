@@ -3,7 +3,6 @@ import { UserProfile, Skill, LLMConfig, getEffectiveMembershipTier } from './typ
 import { INITIAL_SKILLS, GUEST_USER, DEFAULT_LLM_CONFIG } from './data/initialData';
 import { AiStudioWorkspace } from './components/AiStudioWorkspace';
 import { LoginModal } from './components/LoginModal';
-import { AdminPanel } from './components/AdminPanel';
 
 export default function App() {
   const [user, setUser] = useState<UserProfile>(GUEST_USER);
@@ -84,46 +83,6 @@ export default function App() {
   // Modals & Navigation state
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isLoginTriggeredBy401, setIsLoginTriggeredBy401] = useState(false);
-  const [isAdminOpen, setIsAdminOpen] = useState(() => {
-    return (
-      typeof window !== 'undefined' &&
-      (window.location.pathname.startsWith('/admin') ||
-        window.location.hash.toLowerCase().includes('admin'))
-    );
-  });
-
-  // Listen to URL hash/popstate changes for independent admin link access
-  React.useEffect(() => {
-    const handleUrlChange = () => {
-      if (
-        window.location.pathname.startsWith('/admin') ||
-        window.location.hash.toLowerCase().includes('admin')
-      ) {
-        setIsAdminOpen(true);
-      }
-    };
-    window.addEventListener('popstate', handleUrlChange);
-    window.addEventListener('hashchange', handleUrlChange);
-    return () => {
-      window.removeEventListener('popstate', handleUrlChange);
-      window.removeEventListener('hashchange', handleUrlChange);
-    };
-  }, []);
-
-  const openAdmin = () => {
-    if (window.location.hash !== '#admin') {
-      window.history.pushState(null, '', '#admin');
-    }
-    setIsAdminOpen(true);
-  };
-
-  const closeAdmin = () => {
-    if (window.location.hash === '#admin') {
-      window.history.pushState(null, '', window.location.pathname);
-    }
-    setIsAdminOpen(false);
-    refreshUserProfile();
-  };
 
   return (
     <div className="min-h-screen bg-white text-gray-900 font-sans antialiased relative overflow-hidden selection:bg-gray-900 selection:text-white">
@@ -141,7 +100,6 @@ export default function App() {
           setIsLoginTriggeredBy401(false);
           setIsLoginOpen(true);
         }}
-        onOpenAdmin={openAdmin}
         onTriggerLogin401={() => {
           setIsLoginTriggeredBy401(true);
           setIsLoginOpen(true);
@@ -162,18 +120,6 @@ export default function App() {
             setIsLoginOpen(false);
             setIsLoginTriggeredBy401(false);
           }}
-        />
-      )}
-
-      {isAdminOpen && (
-        <AdminPanel
-          llmConfig={llmConfig}
-          setLlmConfig={setLlmConfig}
-          skills={skills}
-          setSkills={setSkills}
-          user={user}
-          setUser={setUser}
-          onClose={closeAdmin}
         />
       )}
     </div>

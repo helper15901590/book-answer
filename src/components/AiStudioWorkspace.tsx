@@ -33,7 +33,6 @@ import {
   Brain,
   Clock,
   User,
-  Settings,
 } from 'lucide-react';
 
 interface AiStudioWorkspaceProps {
@@ -46,7 +45,6 @@ interface AiStudioWorkspaceProps {
   setSelectedSkill: (skill: Skill | null) => void;
   onRefreshUser?: () => void;
   onOpenLogin: () => void;
-  onOpenAdmin: () => void;
   onTriggerLogin401: () => void;
 }
 
@@ -60,7 +58,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   setSelectedSkill,
   onRefreshUser,
   onOpenLogin,
-  onOpenAdmin,
   onTriggerLogin401,
 }) => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -856,14 +853,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           >
             <span className="font-serif font-bold text-lg text-gray-900 tracking-tight">问书</span>
           </div>
-          <button
-            onClick={onOpenAdmin}
-            title="后台管理系统"
-            aria-label="后台管理系统"
-            className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
-          >
-            <Settings className="w-3.5 h-3.5" />
-          </button>
         </div>
 
         <div className="flex items-center gap-3">
