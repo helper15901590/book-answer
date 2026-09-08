@@ -2,18 +2,46 @@ import { Express } from 'express';
 import bcrypt from 'bcryptjs';
 import fs from 'fs';
 import path from 'path';
+import rateLimit from 'express-rate-limit';
 import { GoogleGenAI } from '@google/genai';
 import { db } from '../db.js';
 import { DATA_DIR } from '../config.js';
 import { metrics } from '../services/metrics.js';
 import { requireAdmin } from '../middleware/admin.js';
-import { sanitizeUser } from '../middleware/auth.js';
+import { sanitizeUser, signToken } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
 import { resolveGeminiModelName } from '../services/llm/gemini.js';
 import { newUserId } from '../services/ids.js';
 import { UserProfile, MembershipTier, cleanBookTitle } from '../../src/types.js';
 
+// 后台登录限流：10 次/分/IP（与前台登录限流同口径）
+const adminLoginLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: '尝试过于频繁，请稍后再试' } });
+
 export function registerAdminRoutes(app: Express): void {
+  // 后台专用登录端点：管理员为纯后台身份，前台 /api/auth/login 一律拒绝管理员登录
+  app.post('/api/admin/login', adminLoginLimiter, (req, res) => {
+    const { phone, code } = req.body;
+    const cleanPhone = (phone || '').trim();
+    const cleanCode = (code || '').trim();
+    if (!cleanPhone || !cleanCode) {
+      return res.status(400).json({ error: '请输入手机号码与密码' });
+    }
+    const user = db.getUserByPhone(cleanPhone);
+    if (!user) {
+      return res.status(404).json({ error: '该账号不存在' });
+    }
+    // 先验密再判角色，避免未持密码者探测管理员手机号
+    const storedHash = (user.password || '').trim();
+    if (!storedHash || !bcrypt.compareSync(cleanCode, storedHash)) {
+      return res.status(400).json({ error: '登录密码错误，请重新输入' });
+    }
+    if (user.role !== 'admin' && !user.isAdmin) {
+      return res.status(403).json({ error: '该账号非管理员，禁止访问后台' });
+    }
+    const token = signToken(user);
+    res.json({ success: true, user: { ...sanitizeUser(user), token }, token });
+  });
+
   // 素材上传 API
   app.post('/api/admin/upload-asset', requireAdmin, async (req, res) => {
     try {

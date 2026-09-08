@@ -32,7 +32,8 @@ export const AdminGate: React.FC = () => {
     setError('');
     setSubmitting(true);
     try {
-      const res = await fetch('/api/auth/login', {
+      // 后台专用登录端点（前台 /api/auth/login 已拒绝管理员账号）
+      const res = await fetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: phone.trim(), code: code.trim() }),

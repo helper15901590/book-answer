@@ -25,7 +25,12 @@ export default function App() {
       .then((data) => {
         // 未登录时服务端返回默认游客载荷（计数为 0），跳过同步以免清零本地当日计数
         if (data.user && data.user.role !== 'guest') {
-          setUser(data.user);
+          if (data.user.role === 'admin' || data.user.isAdmin) {
+            // 管理员为纯后台身份：主前端不呈现，清理历史遗留的前端 token
+            localStorage.removeItem('auth_token');
+          } else {
+            setUser(data.user);
+          }
         }
         return data.user;
       })
