@@ -631,6 +631,17 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     }
   };
 
+  // 失败回滚：请求未成功时把游客额度恢复到本次尝试前（闭包中的 user 即调用前快照）。
+  // 游客计数纯本地持久化，不回滚则一次网络失败就永久烧掉当日一次额度
+  const rollbackGuestQuota = () => {
+    if (user.role !== 'guest') return;
+    rememberGuestCount(user.guestUsedCount || 0);
+    setUser((prev) => ({
+      ...prev,
+      guestUsedCount: Math.max(0, (prev.guestUsedCount || 0) - 1),
+    }));
+  };
+
   const handleSendMessage = async (overrideText?: string) => {
     const textToSend = overrideText || inputText;
     if (!textToSend.trim() || isGenerating || !activeSession || !activeSkill) return;
@@ -740,12 +751,18 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               setCurrentStreamingText(accumulatedText);
             }
             if (data.user) {
-              // 游客态服务端无记录，跳过同步以免清零本地当日计数
-              setUser((prev) => (prev.role === 'guest' ? prev : data.user));
+              // 游客态服务端无记录，跳过同步以免清零本地当日计数；管理员载荷主前端一律不呈现
+              setUser((prev) =>
+                prev.role === 'guest' || data.user.role === 'admin' || data.user.isAdmin ? prev : data.user
+              );
             }
             if (data.done) {
               finalizedMsg = data.assistantMessage;
-              if (data.user) setUser((prev) => (prev.role === 'guest' ? prev : data.user));
+              if (data.user) {
+                setUser((prev) =>
+                  prev.role === 'guest' || data.user.role === 'admin' || data.user.isAdmin ? prev : data.user
+                );
+              }
             }
           } catch {
             // ignore malformed SSE line
@@ -789,6 +806,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       if (err?.name === 'AbortError' || abortController.signal.aborted) {
         return;
       }
+      // 非用户主动停止的失败（网络错误/服务端拒绝/流中断）：回滚预扣的游客额度
+      rollbackGuestQuota();
       console.warn('SSE stream error:', err);
       if (thinkingTimerRef.current) {
         clearInterval(thinkingTimerRef.current);

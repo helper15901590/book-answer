@@ -1,11 +1,12 @@
 node_modules/
 build/
 dist/
+dist-server/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
 # 数据库含用户凭据，严禁入库；运行数据统一落 data/
-commercial.sqlite
+commercial.sqlite*
 /data/

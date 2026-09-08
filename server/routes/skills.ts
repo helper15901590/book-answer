@@ -79,9 +79,9 @@ export function registerSkillsRoutes(app: Express): void {
     if (!skill) {
       return res.status(404).json({ error: 'Skill not found' });
     }
-    skill.searchCount = (skill.searchCount || 0) + 1;
-    db.saveSkill(skill);
-    res.json({ success: true, skill });
+    // 原子自增计数：旧读-改-写整行 INSERT OR REPLACE（含全量正文落盘）放大 WAL 与同步写成本
+    db.incrementSkillSearchCount(skill.id);
+    res.json({ success: true, skill: { ...skill, searchCount: (skill.searchCount || 0) + 1 } });
   });
 
   // 公开路径：限流 10 次/时/IP；skillId 落库仅管理员生效（防未授权篡改书籍数据）

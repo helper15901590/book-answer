@@ -10,6 +10,8 @@ services:
       NODE_ENV: production
       PORT: "3000"
       DATA_DIR: /app/data
+      # 配额日界/月界以服务器本地时区为准：固定北京时间，与前台「每日零点刷新」文案一致（镜像默认 UTC）
+      TZ: Asia/Shanghai
     ports:
       - "${HOST_PORT:-3000}:3000"
     volumes:

@@ -1,4 +1,4 @@
-import { Express, Request } from 'express';
+import { Express, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { db } from '../db.js';
 import { AuthRequest, sanitizeUser } from '../middleware/auth.js';
@@ -17,6 +17,38 @@ const chatLimiter = rateLimit({
   skip: (req: Request) => !!(req as AuthRequest).user,
   message: { error: '请求过于频繁，请稍后再试' },
 });
+
+// 入参校验：非字符串参数会在下游触发 TypeError（如 .trim()），Express 4 不捕获 async
+// handler 异常，Node 22 默认策略下未处理 rejection 会直接崩掉进程（未认证即可远程触发）
+const MAX_MESSAGE_LENGTH = 4000;
+
+function validateChatBody(body: any): string | null {
+  const { sessionId, skillId, messageText, userId } = body || {};
+  if (typeof sessionId !== 'string' || !sessionId || typeof messageText !== 'string' || !messageText) {
+    return '缺少必要的 sessionId 或 messageText 参数';
+  }
+  if (sessionId.length > 128) return 'sessionId 过长';
+  if (messageText.length > MAX_MESSAGE_LENGTH) return `消息过长，请控制在 ${MAX_MESSAGE_LENGTH} 字以内`;
+  if (skillId !== undefined && typeof skillId !== 'string') return 'skillId 参数格式错误';
+  if (userId !== undefined && typeof userId !== 'string') return 'userId 参数格式错误';
+  return null;
+}
+
+// Express 4 不捕获 async handler 抛出的异常：统一包装兜底，
+// SSE 场景以错误帧收尾（响应头已发出时不能再改状态码），JSON 场景返回 500
+function asyncHandler(fn: (req: AuthRequest, res: Response) => Promise<unknown>) {
+  return (req: AuthRequest, res: Response) => {
+    fn(req, res).catch((err: any) => {
+      console.error('聊天端点未捕获异常:', err?.message || err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: '服务器内部错误，请稍后重试' });
+      } else if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: '服务器内部错误，请稍后重试' })}\n\n`);
+        res.end();
+      }
+    });
+  };
+}
 
 export function registerChatRoutes(app: Express): void {
   // 会话管理 API（按用户隔离）
@@ -70,14 +102,19 @@ export function registerChatRoutes(app: Express): void {
   });
 
   // SSE（Server-Sent Events）流式对话端点（未认证请求限流 10 次/分/IP）
-  app.post('/api/chat/stream', chatLimiter, async (req: AuthRequest, res) => {
+  app.post('/api/chat/stream', chatLimiter, asyncHandler(async (req: AuthRequest, res) => {
     const { sessionId, skillId, messageText, userId } = req.body;
-    if (!sessionId || !messageText) {
-      return res.status(400).json({ error: '缺少必要的 sessionId 或 messageText 参数' });
+    const invalid = validateChatBody(req.body);
+    if (invalid) {
+      return res.status(400).json({ error: invalid });
     }
 
     const currentUser = req.user || (userId ? db.getUserById(userId) : null);
     let session = db.getChatSessionById(sessionId);
+    // 会话归属校验：有主会话仅本人可续写（防止持他人 sessionId 越权读写对话历史）
+    if (session?.userId && session.userId !== currentUser?.id) {
+      return res.status(403).json({ error: '无权访问该会话' });
+    }
     if (!session) {
       const targetSkill = (skillId ? db.getSkillById(skillId) : null) || db.getSkills()[0];
       if (targetSkill) {
@@ -134,8 +171,12 @@ export function registerChatRoutes(app: Express): void {
     }
 
     let isClientConnected = true;
+    // 中止控制器提升到 handler 级：客户端断连时立即中止上游请求
+    // （否则 reader.read() 挂起等待下次推流，上游继续生成并计费、连接不释放）
+    const controller = new AbortController();
     res.on('close', () => {
       isClientConnected = false;
+      controller.abort();
       metrics.activeSseConnections = Math.max(0, metrics.activeSseConnections - 1);
     });
 
@@ -189,7 +230,6 @@ export function registerChatRoutes(app: Express): void {
         }
 
         const timeoutSeconds = Math.max(30, Number(llmConfig.timeoutSec) || 60);
-        const controller = new AbortController();
         const timeoutTimer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
 
         const upstreamRes = await fetch(targetUrl, {
@@ -201,45 +241,49 @@ export function registerChatRoutes(app: Express): void {
           body: JSON.stringify(requestBody),
           signal: controller.signal,
         });
-        clearTimeout(timeoutTimer);
 
-        if (upstreamRes.ok && upstreamRes.body) {
-          const reader = upstreamRes.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
+        try {
+          if (upstreamRes.ok && upstreamRes.body) {
+            const reader = upstreamRes.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
 
-          while (isClientConnected) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
+            while (isClientConnected) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
 
-            const lines = buffer.split(/\r?\n/);
-            buffer = lines.pop() || '';
+              const lines = buffer.split(/\r?\n/);
+              buffer = lines.pop() || '';
 
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data:')) continue;
-              const payloadStr = trimmed.replace(/^data:\s*/, '').trim();
-              if (payloadStr === '[DONE]') continue;
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.startsWith('data:')) continue;
+                const payloadStr = trimmed.replace(/^data:\s*/, '').trim();
+                if (payloadStr === '[DONE]') continue;
 
-              try {
-                const parsed = JSON.parse(payloadStr);
-                const choice = parsed.choices?.[0];
-                const delta = choice?.delta?.content ?? choice?.delta?.reasoning_content ?? '';
-                if (delta) {
-                  realStreamSuccess = true;
-                  fullAssistantReply += delta;
-                  writeSSE({ delta, fullText: fullAssistantReply });
+                try {
+                  const parsed = JSON.parse(payloadStr);
+                  const choice = parsed.choices?.[0];
+                  const delta = choice?.delta?.content ?? choice?.delta?.reasoning_content ?? '';
+                  if (delta) {
+                    realStreamSuccess = true;
+                    fullAssistantReply += delta;
+                    writeSSE({ delta, fullText: fullAssistantReply });
+                  }
+                } catch {
+                  // ignore JSON parse error on incomplete chunk
                 }
-              } catch {
-                // ignore JSON parse error on incomplete chunk
               }
             }
+          } else {
+            // Upstream returned HTTP error status (401, 403, 500, etc.)
+            const errText = await upstreamRes.text().catch(() => '');
+            console.warn(`Upstream API failed (HTTP ${upstreamRes.status}): ${errText.slice(0, 150)}. Falling back to Gemini...`);
           }
-        } else {
-          // Upstream returned HTTP error status (401, 403, 500, etc.)
-          const errText = await upstreamRes.text().catch(() => '');
-          console.warn(`Upstream API failed (HTTP ${upstreamRes.status}): ${errText.slice(0, 150)}. Falling back to Gemini...`);
+        } finally {
+          // 超时清理推迟到 body 读取结束后：此前响应头一到就清理，body 阶段停滞将永久挂起
+          clearTimeout(timeoutTimer);
         }
       } catch (err: any) {
         console.warn('Primary LLM streaming exception, falling back to Gemini:', err?.message || err);
@@ -247,7 +291,7 @@ export function registerChatRoutes(app: Express): void {
     }
 
     // Tier 2: If Tier 1 did not produce response, fall back to server-side Gemini
-    if ((!realStreamSuccess || !fullAssistantReply) && geminiKey) {
+    if (isClientConnected && (!realStreamSuccess || !fullAssistantReply) && geminiKey) {
       try {
         const text = await callGeminiResponse({
           geminiKey,
@@ -274,7 +318,7 @@ export function registerChatRoutes(app: Express): void {
     }
 
     // Tier 3: If both external LLMs are unavailable, use high-quality book distillation
-    if (!realStreamSuccess || !fullAssistantReply) {
+    if (isClientConnected && (!realStreamSuccess || !fullAssistantReply)) {
       const distillation = generateDeepBookDistillation(skill, messageText, session?.messages || []);
       realStreamSuccess = true;
       fullAssistantReply = distillation;
@@ -314,17 +358,22 @@ export function registerChatRoutes(app: Express): void {
     });
 
     res.end();
-  });
+  }));
 
   // Backward-compatible POST /api/chat/send（未认证请求限流 10 次/分/IP）
-  app.post('/api/chat/send', chatLimiter, async (req: AuthRequest, res) => {
+  app.post('/api/chat/send', chatLimiter, asyncHandler(async (req: AuthRequest, res) => {
     const { sessionId, skillId, messageText, userId } = req.body;
-    if (!sessionId || !messageText) {
-      return res.status(400).json({ error: '缺少必要的 sessionId 或 messageText 参数' });
+    const invalid = validateChatBody(req.body);
+    if (invalid) {
+      return res.status(400).json({ error: invalid });
     }
 
     const currentUser = req.user || (userId ? db.getUserById(userId) : null);
     let session = db.getChatSessionById(sessionId);
+    // 会话归属校验：有主会话仅本人可续写（防止持他人 sessionId 越权读写对话历史）
+    if (session?.userId && session.userId !== currentUser?.id) {
+      return res.status(403).json({ error: '无权访问该会话' });
+    }
     if (!session) {
       const targetSkill = (skillId ? db.getSkillById(skillId) : null) || db.getSkills()[0];
       if (targetSkill) {
@@ -413,14 +462,18 @@ export function registerChatRoutes(app: Express): void {
           body: JSON.stringify(reqBody),
           signal: controller.signal,
         });
-        clearTimeout(timeoutTimer);
 
-        if (resUpstream.ok) {
-          const json = await resUpstream.json().catch(() => ({}));
-          assistantReply = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || '';
-        } else {
-          const errText = await resUpstream.text().catch(() => '');
-          console.warn(`Upstream sync call failed (HTTP ${resUpstream.status}): ${errText.slice(0, 150)}. Falling back to Gemini...`);
+        try {
+          if (resUpstream.ok) {
+            const json = await resUpstream.json().catch(() => ({}));
+            assistantReply = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || '';
+          } else {
+            const errText = await resUpstream.text().catch(() => '');
+            console.warn(`Upstream sync call failed (HTTP ${resUpstream.status}): ${errText.slice(0, 150)}. Falling back to Gemini...`);
+          }
+        } finally {
+          // 超时覆盖到 body 阶段（.json()），此前响应头一到即清理
+          clearTimeout(timeoutTimer);
         }
       } catch (e: any) {
         console.warn('OpenAI sync call error, falling back to Gemini:', e?.message || e);
@@ -468,5 +521,5 @@ export function registerChatRoutes(app: Express): void {
       session,
       user: sanitizeUser(quota.updatedUser || currentUser || GUEST_USER),
     });
-  });
+  }));
 }

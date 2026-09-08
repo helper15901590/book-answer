@@ -2,6 +2,7 @@
 # 必须排除宿主机 node_modules：否则 COPY . . 会用 Windows 原生二进制覆盖镜像内 npm ci 产物（better-sqlite3 将无法加载）
 node_modules
 dist
+dist-server
 data
 assets
 .git

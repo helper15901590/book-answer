@@ -15,7 +15,9 @@ import { DATA_DIR } from './config.js';
 
 const SQLITE_DB_PATH = path.join(DATA_DIR, 'commercial.sqlite');
 
-function getTodayString(): string {
+// 服务器本地时区的 YYYY-MM-DD：配额日界的唯一口径（建号/统计等处一律复用本函数，
+// 禁止另起 toISOString().slice(0,10) 的 UTC 口径，容器 TZ 即配额时区）
+export function getTodayString(): string {
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -287,19 +289,25 @@ export class CommercialSQLDatabase {
 
   public deleteUser(userId: string): boolean {
     if (!this.db) return false;
-    this.db.prepare(`DELETE FROM users WHERE id = ? OR union_id = ?`).run(userId, userId);
-    return true;
+    const result = this.db.prepare(`DELETE FROM users WHERE id = ? OR union_id = ?`).run(userId, userId);
+    // 级联清理会话：usr_ 顺序号会被复用，孤儿会话将导致新用户继承被删者的聊天记录
+    // （orders 保留作运营痕迹，不含对话内容）
+    this.db.prepare(`DELETE FROM chat_sessions WHERE user_id = ?`).run(userId);
+    return result.changes > 0;
   }
 
   public clearAllUsers(): void {
     if (!this.db) return;
     this.db.prepare(`DELETE FROM users`).run();
+    // 有主会话一并清理（防序号复用继承历史）；匿名游客会话（user_id 为空）不归属任何账号，保留
+    this.db.prepare(`DELETE FROM chat_sessions WHERE user_id IS NOT NULL`).run();
   }
 
   // 删除历史管理员行（管理员身份已不入库，凭证走环境变量），返回删除数量
+  // id='admin' 为合成身份的虚拟 ID，一并防御性清理，杜绝脏数据行签出管理员 token
   public removeAdminUsers(): number {
     if (!this.db) return 0;
-    return this.db.prepare(`DELETE FROM users WHERE role = 'admin' OR is_admin = 1`).run().changes;
+    return this.db.prepare(`DELETE FROM users WHERE role = 'admin' OR is_admin = 1 OR id = 'admin'`).run().changes;
   }
 
   private mapUserRowToProfile(row: any): UserProfile {
@@ -337,6 +345,11 @@ export class CommercialSQLDatabase {
         user.membershipTier = 'free_member';
         const config = this.getLLMConfig();
         user.dailyMaxChats = config.dailyLimits?.freeMember ?? 10;
+        // 付费配额（按月）与免费配额（按日）是两套语义：降级即重新起算，
+        // 否则月度额度已耗尽的用户在降级当天会被免费额度误拦到次日零点
+        user.dailyUsedCount = 0;
+        user.guestUsedCount = 0;
+        user.lastActiveDate = today;
         modified = true;
       }
     }
@@ -372,12 +385,8 @@ export class CommercialSQLDatabase {
   }
 
   // --- Skills Operations (SQL-Driven) ---
-  public getSkills(): Skill[] {
-    if (!this.db) return INITIAL_SKILLS;
-    const rows = this.db.prepare(`SELECT * FROM skills ORDER BY search_count DESC, id ASC`).all() as any[];
-    if (rows.length === 0) return INITIAL_SKILLS;
-
-    return rows.map((obj) => ({
+  private mapSkillRow(obj: any): Skill {
+    return {
       id: obj.id,
       title: obj.title,
       author: obj.author,
@@ -393,11 +402,29 @@ export class CommercialSQLDatabase {
       sampleQuestions: typeof obj.sample_questions === 'string' ? JSON.parse(obj.sample_questions || '[]') : obj.sample_questions,
       chatCount: obj.chat_count,
       searchCount: obj.search_count,
-    }));
+    };
   }
 
+  public getSkills(): Skill[] {
+    if (!this.db) return INITIAL_SKILLS;
+    const rows = this.db.prepare(`SELECT * FROM skills ORDER BY search_count DESC, id ASC`).all() as any[];
+    if (rows.length === 0) return INITIAL_SKILLS;
+
+    return rows.map((obj) => this.mapSkillRow(obj));
+  }
+
+  // 单行查询：旧实现 getSkills().find() 每次全表加载所有书籍的完整正文并逐行
+  // JSON.parse，聊天/点击等热路径同步阻塞事件循环
   public getSkillById(id: string): Skill | undefined {
-    return this.getSkills().find((s) => s.id === id);
+    if (!this.db) return INITIAL_SKILLS.find((s) => s.id === id);
+    const row = this.db.prepare(`SELECT * FROM skills WHERE id = ?`).get(id) as any;
+    return row ? this.mapSkillRow(row) : undefined;
+  }
+
+  // 点击计数原子自增：替代「读整行→改→INSERT OR REPLACE 整行重写」（含全量正文落盘）
+  public incrementSkillSearchCount(id: string): void {
+    if (!this.db) return;
+    this.db.prepare(`UPDATE skills SET search_count = search_count + 1 WHERE id = ?`).run(id);
   }
 
   public saveSkill(skill: Skill): Skill {

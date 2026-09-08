@@ -15,13 +15,13 @@
 
 ## 常用命令
 - 开发：`npm run dev`（tsx server/index.ts，含 HMR）
-- 构建：`npm run build`（vite build 多页 index.html/admin.html + esbuild 打包 server → dist/server.cjs）
+- 构建：`npm run build`（vite build 多页 index.html/admin.html → dist/ + esbuild 打包 server → dist-server/server.cjs，与前端静态目录分离防止源码外泄）
 - 生产启动：`npm start`
 - 类型检查（lint）：`npm run lint`（tsc --noEmit）
 - 测试：无测试基础设施
 
 ## 环境变量（.env.local 或 .env，参考 .env.example）
-`JWT_SECRET`（生产必填 ≥16 字符）、`ADMIN_PHONE`/`ADMIN_PASSWORD`（管理后台登录凭证，账号不入库）、`DATA_DIR`、`TRUST_PROXY`、`HOST_PORT`（仅 compose 插值）、`GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`
+`JWT_SECRET`（必填 ≥16 字符，无默认值，缺失拒绝启动）、`ADMIN_PHONE`/`ADMIN_PASSWORD`（管理后台登录凭证，账号不入库）、`DATA_DIR`、`TRUST_PROXY`、`HOST_PORT`（仅 compose 插值）、`GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`
 
 ## 项目结构
 | 路径 | 职责 |

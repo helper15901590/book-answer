@@ -23,11 +23,18 @@ export default function App() {
     return fetch('/api/auth/me', { headers })
       .then((res) => res.json())
       .then((data) => {
-        // 未登录时服务端返回默认游客载荷（计数为 0），跳过同步以免清零本地当日计数
-        if (data.user && data.user.role !== 'guest') {
+        if (data.user) {
           if (data.user.role === 'admin' || data.user.isAdmin) {
             // 管理员为纯后台身份：主前端不呈现，清理历史遗留的前端 token
             localStorage.removeItem('auth_token');
+          } else if (data.user.role === 'guest') {
+            // 服务端返回游客载荷：若本地还持有 token 说明已失效（过期/被清），清理之；
+            // 本地同为游客时跳过同步（保护当日本地计数不被服务端的 0 计数清零），
+            // 本地为会员时必须正常降级回游客态（旧实现一律跳过，导致 token 过期后 UI 永久滞留会员态）
+            if (localStorage.getItem('auth_token')) {
+              localStorage.removeItem('auth_token');
+            }
+            setUser((prev) => (prev.role === 'guest' ? prev : loadGuestUser()));
           } else {
             setUser(data.user);
           }

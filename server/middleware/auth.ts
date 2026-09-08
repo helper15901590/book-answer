@@ -63,7 +63,7 @@ export function extractUserFromRequest(req: Request): UserProfile | null {
   if (!token) return null;
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { id: string; unionId?: string };
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { id: string; unionId?: string };
     if (payload && payload.id) {
       // 管理员身份为合成对象（不入库），命中虚拟 ID 直接返回
       if (payload.id === ADMIN_ACCOUNT_ID) {

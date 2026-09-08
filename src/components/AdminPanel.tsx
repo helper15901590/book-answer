@@ -46,7 +46,7 @@ import {
   Sparkles,
   Loader2,
 } from 'lucide-react';
-import { apiFetch } from '../lib/apiFetch';
+import { apiFetch, authTokenKey } from '../lib/apiFetch';
 
 interface AdminPanelProps {
   llmConfig: LLMConfig;
@@ -252,14 +252,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     onConfirm: () => {},
   });
 
+  // 后台会话过期出口：401/403 时清除后台 token 并刷新页面，由 AdminGate 挂载校验回落登录页
+  // （缺此出口时 token 过期后面板呈「看似正常实则全空」状态，易被误判为数据丢失）
+  const ensureAdminAuthorized = (res: Response): Response => {
+    if (res.status === 401 || res.status === 403) {
+      localStorage.removeItem(authTokenKey());
+      window.location.reload();
+      throw new Error('登录状态已失效，正在返回登录页');
+    }
+    return res;
+  };
+
   const fetchAdminData = async () => {
     setLoading(true);
     try {
       const [resStats, resSkills, resUsers, resLlm, resTags] = await Promise.all([
-        apiFetch('/api/admin/stats').then((r) => r.json()),
+        apiFetch('/api/admin/stats').then(ensureAdminAuthorized).then((r) => r.json()),
         fetch('/api/skills').then((r) => r.json()),
-        apiFetch('/api/admin/users').then((r) => r.json()),
-        apiFetch('/api/admin/llm-config').then((r) => r.json()),
+        apiFetch('/api/admin/users').then(ensureAdminAuthorized).then((r) => r.json()),
+        apiFetch('/api/admin/llm-config').then(ensureAdminAuthorized).then((r) => r.json()),
         fetch('/api/tags').then((r) => r.json()),
       ]);
 

@@ -17,5 +17,8 @@ COPY package*.json ./
 # 同上：better-sqlite3 用内置 prebuilds，其余生产依赖无需 install 脚本
 RUN npm ci --omit=dev --ignore-scripts
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/dist-server ./dist-server
+# 非 root 运行（uid 1000）：宿主挂载的 data/ 需 chown 1000:1000，见 docs/deploy.md §2
+USER node
 EXPOSE 3000
-CMD ["node", "dist/server.cjs"]
+CMD ["node", "dist-server/server.cjs"]

@@ -14,6 +14,12 @@ import { registerChatRoutes } from './routes/chat.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerConfigRoutes } from './routes/config.js';
 
+// 最后防线：Express 4 不捕获 async handler 异常，Node 22 默认策略下未处理
+// rejection 会直接崩掉进程；此处仅记日志保活（具体端点的错误收尾在 asyncHandler 中）
+process.on('unhandledRejection', (reason: any) => {
+  console.error('未处理的 Promise rejection（进程保持存活）:', reason?.message || reason);
+});
+
 async function startServer() {
   const app = express();
 

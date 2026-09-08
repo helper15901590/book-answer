@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import rateLimit from 'express-rate-limit';
 import { GoogleGenAI } from '@google/genai';
-import { db } from '../db.js';
+import { db, getTodayString } from '../db.js';
 import { DATA_DIR, ADMIN_PHONE, ADMIN_PASSWORD } from '../config.js';
 import { metrics } from '../services/metrics.js';
 import { requireAdmin } from '../middleware/admin.js';
@@ -163,6 +163,15 @@ export function registerAdminRoutes(app: Express): void {
     if (!cleanCode) {
       return res.status(400).json({ error: '登录验证码不能为空' });
     }
+    // 与改密口径一致：非 6 位数字会被前台登录的格式校验拦下，产出无法登录的死账号
+    if (!/^\d{6}$/.test(cleanCode)) {
+      return res.status(400).json({ error: '密码必须为6位阿拉伯数字' });
+    }
+
+    // 管理员手机号不可被普通账号占用：维持前台对该号码统一按「账号不存在」处理的不变量
+    if (ADMIN_PHONE && cleanPhone === ADMIN_PHONE) {
+      return res.status(400).json({ error: '该手机号不可用' });
+    }
 
     const existing = db.getUserByPhone(cleanPhone);
     if (existing) {
@@ -213,7 +222,8 @@ export function registerAdminRoutes(app: Express): void {
       dailyUsedCount: 0,
       guestUsedCount: 0,
       isAdmin: false,
-      lastActiveDate: new Date().toISOString().slice(0, 10),
+      // 复用配额引擎的本地时区日期口径（UTC 口径会在每天 00:00-08:00 建号时写入「昨天」，触发多余的周期重置）
+      lastActiveDate: getTodayString(),
       createdAt: new Date().toISOString(),
     };
 
@@ -241,6 +251,10 @@ export function registerAdminRoutes(app: Express): void {
         // 服务端兜底校验：拒绝掩码占位（138****xxxx）等非法手机号入库
         if (!/^\d{11}$/.test(cleanPhone)) {
           return res.status(400).json({ error: '手机号码必须为11位阿拉伯数字' });
+        }
+        // 管理员手机号不可被普通账号占用（同建号口径）
+        if (ADMIN_PHONE && cleanPhone === ADMIN_PHONE) {
+          return res.status(400).json({ error: '该手机号不可用' });
         }
         const existing = db.getUserByPhone(cleanPhone);
         if (existing && existing.id !== user.id) {
