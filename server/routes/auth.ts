@@ -33,46 +33,42 @@ export function registerAuthRoutes(app: Express): void {
     const quarterlyLimit = config.dailyLimits?.quarterlyMember ?? 200;
     const yearlyLimit = config.dailyLimits?.yearlyMember ?? 500;
 
-    let user = db.getUserByPhone(cleanPhone);
+    // 仅按手机号精确匹配；旧「昵称兜底匹配」已移除——昵称为手机号后4位、可重复，存在误登他人账号风险
+    const user = db.getUserByPhone(cleanPhone);
     if (!user) {
-      const users = db.getUsers();
-      user = users.find((u) => u.phone === cleanPhone || (u.nickname && u.nickname === cleanPhone));
-    }
-
-    if (user) {
-      // 密码校验：数据库存储 bcrypt 哈希，使用 compareSync 恒定时间比对（不再明文比较，不再"未设密码即存输入"）
-      const storedHash = (user.password || '').trim();
-      if (!storedHash || !bcrypt.compareSync(cleanCode, storedHash)) {
-        return res.status(400).json({ error: '登录密码或验证码错误，请重新输入' });
-      }
-
-      if (user.role === 'guest') {
-        user.role = 'member';
-      }
-      if (!user.membershipTier || user.membershipTier === 'guest') {
-        user.membershipTier = 'free_member';
-      }
-
-      const effectiveTier = getEffectiveMembershipTier(user);
-      if (effectiveTier === 'monthly_member') {
-        user.dailyMaxChats = monthlyLimit;
-      } else if (effectiveTier === 'quarterly_member') {
-        user.dailyMaxChats = quarterlyLimit;
-      } else if (effectiveTier === 'yearly_member') {
-        user.dailyMaxChats = yearlyLimit;
-      } else if (effectiveTier === 'free_member') {
-        user.dailyMaxChats = freeMemberLimit;
-      } else {
-        user.dailyMaxChats = guestLimit;
-      }
-
-      if (nickname) user.nickname = nickname;
-      if (avatar) user.avatar = avatar;
-      db.saveUser(user);
-    } else {
       // 仅管理员建号：不再自动注册（自助注册后门已关闭）
       return res.status(404).json({ error: '该账号不存在，内测阶段账号由管理员统一开通，请联系管理员' });
     }
+
+    // 密码校验：数据库存储 bcrypt 哈希，使用 compareSync 恒定时间比对（不再明文比较，不再"未设密码即存输入"）
+    const storedHash = (user.password || '').trim();
+    if (!storedHash || !bcrypt.compareSync(cleanCode, storedHash)) {
+      return res.status(400).json({ error: '登录密码或验证码错误，请重新输入' });
+    }
+
+    if (user.role === 'guest') {
+      user.role = 'member';
+    }
+    if (!user.membershipTier || user.membershipTier === 'guest') {
+      user.membershipTier = 'free_member';
+    }
+
+    const effectiveTier = getEffectiveMembershipTier(user);
+    if (effectiveTier === 'monthly_member') {
+      user.dailyMaxChats = monthlyLimit;
+    } else if (effectiveTier === 'quarterly_member') {
+      user.dailyMaxChats = quarterlyLimit;
+    } else if (effectiveTier === 'yearly_member') {
+      user.dailyMaxChats = yearlyLimit;
+    } else if (effectiveTier === 'free_member') {
+      user.dailyMaxChats = freeMemberLimit;
+    } else {
+      user.dailyMaxChats = guestLimit;
+    }
+
+    if (nickname) user.nickname = nickname;
+    if (avatar) user.avatar = avatar;
+    db.saveUser(user);
 
     const token = signToken(user);
     res.json({ success: true, user: { ...sanitizeUser(user), token }, token });
