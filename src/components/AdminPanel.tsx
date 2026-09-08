@@ -1451,25 +1451,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                             let tierLabel = '普通会员';
                             let tierBadgeColor = 'bg-slate-100/80 text-slate-600 border border-slate-200/60 font-normal';
-                            let maxLimit = u.dailyMaxChats || limits.freeMember || 10;
+                            // 额度上限以实时全局配置为唯一数据源（与服务端限流、主前端显示一致），
+                            // 不再读取 users.dailyMaxChats 过期快照（该快照仅在建号/升级/登录时写入，改配置后不更新）
+                            let maxLimit = limits.freeMember || 10;
 
                             if (effectiveTier === 'yearly_member') {
                               tierLabel = '年度会员';
                               tierBadgeColor = 'bg-slate-900 text-white font-medium';
-                              if (!u.dailyMaxChats) maxLimit = limits.yearlyMember || 500;
+                              maxLimit = limits.yearlyMember || 500;
                             } else if (effectiveTier === 'quarterly_member') {
                               tierLabel = '季度会员';
                               tierBadgeColor = 'bg-slate-100 text-slate-800 border border-slate-200/80 font-medium';
-                              if (!u.dailyMaxChats) maxLimit = limits.quarterlyMember || 200;
+                              maxLimit = limits.quarterlyMember || 200;
                             } else if (effectiveTier === 'monthly_member') {
                               tierLabel = '月度会员';
                               tierBadgeColor = 'bg-slate-100/80 text-slate-700 border border-slate-200/60 font-medium';
-                              if (!u.dailyMaxChats) maxLimit = limits.monthlyMember || 100;
+                              maxLimit = limits.monthlyMember || 100;
                             } else if (isGuest) {
                               tierLabel = '游客';
                               tierBadgeColor = 'text-slate-400 border border-dashed border-slate-200 font-normal';
-                              if (!u.dailyMaxChats) maxLimit = limits.guestUser || 3;
+                              maxLimit = limits.guestUser || 3;
                             }
+                            // 管理员不受额度限制，与主前端一致显示 9999
+                            if (u.role === 'admin' || u.isAdmin) maxLimit = 9999;
 
                             // Expiration status
                             let expiresText = '永久有效';
