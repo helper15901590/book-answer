@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LLMConfig, Skill, UserProfile, formatBookTitle, getEffectiveMembershipTier } from '../types';
+import { LLMConfig, MembershipTier, Skill, UserProfile, formatBookTitle, getEffectiveMembershipTier } from '../types';
 import ReactMarkdown from 'react-markdown';
 import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY } from '../data/initialData';
 import {
@@ -58,11 +58,40 @@ interface AdminPanelProps {
   onClose: () => void;
 }
 
+interface DailyCount {
+  date: string;
+  count: number;
+}
+
+// 与 /api/admin/stats 响应保持一致（db.getAdminStats() 全量字段 + metrics 运行态字段）
 interface AdminStats {
   totalUsers: number;
+  activeVipUsers: number;
+  todayActiveUsers: number;
+  newUsersToday: number;
+  newUsers7d: number;
+  activeUsers7d: number;
+  activeUsers30d: number;
+  dailyNewUsers: DailyCount[];
+  dailyMessages: DailyCount[];
+  tierCounts: Record<MembershipTier, number>;
   totalSkills: number;
-  totalSessions: number;
-  totalReferrals: number;
+  topSkills: { id: string; title: string; searchCount: number }[];
+  totalOrders: number;
+  totalPaidOrders: number;
+  totalRevenue: number;
+  totalChatSessions: number;
+  todaySessions: number;
+  totalMessages: number;
+  todayMessages: number;
+  databaseType: string;
+  storagePath: string;
+  onlineUsers: number;
+  activeSseConnections: number;
+  peakConcurrentSse: number;
+  totalRequestsServed: number;
+  requestsLastMinute: number;
+  uptimeHours: number;
 }
 
 const formatHeatCount = (count?: number) => {
@@ -176,7 +205,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   setUser,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<'skills' | 'categories' | 'resources' | 'users' | 'llm' | 'agreements'>('skills');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'skills' | 'categories' | 'resources' | 'users' | 'llm' | 'agreements'>('dashboard');
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [adminUsers, setAdminUsers] = useState<UserProfile[]>([]);
@@ -263,8 +292,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return res;
   };
 
-  const fetchAdminData = async () => {
-    setLoading(true);
+  // silent=true 用于仪表盘定时刷新：不触发全屏 loading，避免每 30 秒闪烁
+  const fetchAdminData = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [resStats, resSkills, resUsers, resLlm, resTags] = await Promise.all([
         apiFetch('/api/admin/stats').then(ensureAdminAuthorized).then((r) => r.json()),
@@ -284,7 +314,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     } catch (e) {
       console.error('Failed to fetch admin data:', e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -515,6 +545,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       localStorage.removeItem('admin_category_order');
     } catch {}
   }, []);
+
+  // 仪表盘页签打开期间每 30 秒静默刷新统计（切换到其他页签即停止）
+  useEffect(() => {
+    if (activeTab !== 'dashboard') return;
+    const timer = setInterval(() => {
+      fetchAdminData(true);
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [activeTab]);
 
   const showToast = (msg: string) => {
     setSuccessMsg(msg);
@@ -902,6 +941,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
 
           <button
+            onClick={() => setActiveTab('dashboard')}
+            className={`w-full flex items-center justify-between px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
+              activeTab === 'dashboard'
+                ? 'bg-slate-900 text-white font-medium shadow-2xs'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 truncate">
+              <LayoutDashboard className={`w-4 h-4 shrink-0 ${activeTab === 'dashboard' ? 'text-white' : 'text-slate-500'}`} />
+              <span className="truncate">仪表盘</span>
+            </div>
+            {stats && (
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                  activeTab === 'dashboard' ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-500'
+                }`}
+              >
+                在线 {stats.onlineUsers}
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => setActiveTab('skills')}
             className={`w-full flex items-center justify-between px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
               activeTab === 'skills'
@@ -1014,6 +1076,147 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
         {/* Main Content Area */}
         <div className="flex-1 overflow-y-auto p-5 sm:p-7 bg-[#fafafa] space-y-6">
+          {/* TAB 0: DASHBOARD 仪表盘 */}
+          {activeTab === 'dashboard' && (() => {
+            if (!stats) {
+              return (
+                <div className="bg-white border border-slate-200 rounded-xl p-10 text-center text-xs text-slate-400">
+                  统计数据加载中…
+                </div>
+              );
+            }
+            const maxTrend = Math.max(1, ...stats.dailyNewUsers.map((d) => d.count), ...stats.dailyMessages.map((d) => d.count));
+            const tierTotal = Object.values(stats.tierCounts).reduce((a, b) => a + b, 0);
+            const tierMeta: { key: MembershipTier; label: string; bar: string }[] = [
+              { key: 'free_member', label: '普通会员', bar: 'bg-slate-400' },
+              { key: 'monthly_member', label: '月度会员', bar: 'bg-blue-500' },
+              { key: 'quarterly_member', label: '季度会员', bar: 'bg-indigo-500' },
+              { key: 'yearly_member', label: '年度会员', bar: 'bg-amber-500' },
+              { key: 'guest', label: '游客账号', bar: 'bg-slate-200' },
+            ];
+            const maxTopSkill = Math.max(1, ...stats.topSkills.map((s) => s.searchCount));
+            const statCard = (label: string, value: number | string, sub?: string) => (
+              <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col gap-1">
+                <div className="text-[10px] font-medium text-slate-400">{label}</div>
+                <div className="text-2xl font-bold text-slate-900 font-mono">{value}</div>
+                {sub && <div className="text-[10px] text-slate-400 leading-snug">{sub}</div>}
+              </div>
+            );
+            const sectionTitle = (text: string) => (
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider font-mono mb-2.5">{text}</div>
+            );
+            return (
+              <div className="space-y-6">
+                <div>
+                  {sectionTitle('用户概览')}
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                    {statCard('注册总数', stats.totalUsers, `今日新增 +${stats.newUsersToday}`)}
+                    {statCard('在线用户', stats.onlineUsers, '10 分钟内有活动的登录用户（游客不计）')}
+                    {statCard('今日活跃', stats.todayActiveUsers, '今日有过对话行为的用户')}
+                    {statCard('近 7 日活跃', stats.activeUsers7d, `近 7 日新增 +${stats.newUsers7d}`)}
+                    {statCard('近 30 日活跃', stats.activeUsers30d, '按最近活跃日期统计')}
+                    {statCard('付费会员', stats.activeVipUsers, '月度 / 季度 / 年度会员合计')}
+                  </div>
+                </div>
+
+                <div>
+                  {sectionTitle('互动统计')}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {statCard('今日互动次数', stats.todayMessages, '今日产生的对话消息数')}
+                    {statCard('累计消息数', stats.totalMessages, '全部会话消息总量')}
+                    {statCard('会话总数', stats.totalChatSessions, '历史累计创建的会话')}
+                    {statCard('今日新会话', stats.todaySessions, '今日新建的会话数')}
+                  </div>
+                </div>
+
+                <div className="bg-white border border-slate-200 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="text-xs font-semibold text-slate-700">近 14 天趋势</div>
+                    <div className="flex items-center gap-3 text-[10px] text-slate-400">
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-blue-500 inline-block"></span>新增用户</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-slate-300 inline-block"></span>互动次数</span>
+                    </div>
+                  </div>
+                  <div className="flex items-end gap-1.5 h-32">
+                    {stats.dailyNewUsers.map((d, i) => (
+                      <div key={d.date} className="flex-1 flex flex-col items-center gap-1.5 h-full">
+                        <div className="w-full flex-1 flex items-end justify-center gap-0.5">
+                          <div
+                            className="w-1/3 max-w-[10px] bg-blue-500 rounded-t-sm"
+                            style={{ height: `${Math.max(2, (d.count / maxTrend) * 100)}%` }}
+                            title={`${d.date} 新增用户 ${d.count}`}
+                          ></div>
+                          <div
+                            className="w-1/3 max-w-[10px] bg-slate-300 rounded-t-sm"
+                            style={{ height: `${Math.max(2, ((stats.dailyMessages[i]?.count || 0) / maxTrend) * 100)}%` }}
+                            title={`${d.date} 互动 ${stats.dailyMessages[i]?.count || 0} 次`}
+                          ></div>
+                        </div>
+                        <div className="text-[9px] text-slate-400 font-mono shrink-0">{d.date.slice(5)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs font-semibold text-slate-700 mb-3">会员等级分布</div>
+                    {tierTotal === 0 ? (
+                      <div className="text-[10px] text-slate-400">暂无用户</div>
+                    ) : (
+                      <>
+                        <div className="flex w-full h-2.5 rounded-full overflow-hidden bg-slate-100 mb-3">
+                          {tierMeta.map((t) =>
+                            stats.tierCounts[t.key] > 0 ? (
+                              <div key={t.key} className={t.bar} style={{ width: `${(stats.tierCounts[t.key] / tierTotal) * 100}%` }}></div>
+                            ) : null
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                          {tierMeta.map((t) => (
+                            <div key={t.key} className="flex items-center justify-between text-[11px]">
+                              <span className="flex items-center gap-1.5 text-slate-500">
+                                <span className={`w-2 h-2 rounded-sm ${t.bar} inline-block`}></span>
+                                {t.label}
+                              </span>
+                              <span className="font-mono text-slate-700">{stats.tierCounts[t.key]}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-xl p-4">
+                    <div className="text-xs font-semibold text-slate-700 mb-3">热门书籍 TOP5</div>
+                    <div className="space-y-2.5">
+                      {stats.topSkills.map((s, i) => (
+                        <div key={s.id} className="flex items-center gap-2">
+                          <span className={`w-4 h-4 rounded text-[9px] flex items-center justify-center font-bold shrink-0 ${i === 0 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400'}`}>{i + 1}</span>
+                          <span className="text-[11px] text-slate-700 truncate w-28 shrink-0" title={formatBookTitle(s.title)}>{formatBookTitle(s.title)}</span>
+                          <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full bg-slate-400 rounded-full" style={{ width: `${(s.searchCount / maxTopSkill) * 100}%` }}></div>
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-400 w-10 text-right shrink-0">{formatHeatCount(s.searchCount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  {sectionTitle('系统状态')}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {statCard('运行时长', `${stats.uptimeHours} h`, '自本次服务启动起')}
+                    {statCard('近 1 分钟请求', stats.requestsLastMinute, `累计服务 ${stats.totalRequestsServed} 次`)}
+                    {statCard('当前 SSE 连接', stats.activeSseConnections, '正在流式对话的连接数')}
+                    {statCard('SSE 并发峰值', stats.peakConcurrentSse, '本次运行期内最高值')}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* TAB 1: SKILLS MANAGEMENT */}
           {activeTab === 'skills' && (() => {
               const filteredSkills = skills.filter((s) => {

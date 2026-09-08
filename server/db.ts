@@ -25,6 +25,33 @@ export function getTodayString(): string {
   return `${year}-${month}-${day}`;
 }
 
+// 将任意时间戳转为服务器本地时区的 YYYY-MM-DD：
+// ISO 串（含 'T'，客户端/接口写入）直接解析；SQLite datetime('now') 串无时区标记，按 UTC 解析后转本地
+function toLocalDateString(ts?: string | null): string | null {
+  if (!ts) return null;
+  const d = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z');
+  if (isNaN(d.getTime())) return null;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// 今天往前推 n 天的本地日期串（n=0 即今天）
+function localDateNDaysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// 近 n 天日期数组（本地时区，旧→新，末位为今天）
+function lastNDays(n: number): string[] {
+  return Array.from({ length: n }, (_, i) => localDateNDaysAgo(n - 1 - i));
+}
+
 function getCurrentMonthString(): string {
   const now = new Date();
   const year = now.getFullYear();
@@ -628,6 +655,17 @@ export class CommercialSQLDatabase {
     let activeVipUsers = 0;
     const today = getTodayString();
     let todayActiveUsers = 0;
+    // 近 14 天日期桶（本地时区，旧→新），用于新增用户/互动次数趋势
+    const days = lastNDays(14);
+    const dayIndex = new Map(days.map((d, i) => [d, i]));
+    const dailyNewUsers = days.map((date) => ({ date, count: 0 }));
+    const dailyMessages = days.map((date) => ({ date, count: 0 }));
+    const cutoff7d = localDateNDaysAgo(6); // 含今日共 7 天
+    const cutoff30d = localDateNDaysAgo(29);
+    let newUsersToday = 0;
+    let newUsers7d = 0;
+    let activeUsers7d = 0;
+    let activeUsers30d = 0;
 
     users.forEach((u) => {
       const tier = getEffectiveMembershipTier(u);
@@ -640,19 +678,61 @@ export class CommercialSQLDatabase {
       if (u.lastActiveDate === today) {
         todayActiveUsers++;
       }
+      // lastActiveDate 与本地日期串同为 YYYY-MM-DD，可直接按字典序比较
+      if (u.lastActiveDate && u.lastActiveDate >= cutoff7d) {
+        activeUsers7d++;
+      }
+      if (u.lastActiveDate && u.lastActiveDate >= cutoff30d) {
+        activeUsers30d++;
+      }
+      const createdDate = toLocalDateString(u.createdAt);
+      if (createdDate) {
+        if (createdDate === today) newUsersToday++;
+        if (createdDate >= cutoff7d) newUsers7d++;
+        const idx = dayIndex.get(createdDate);
+        if (idx !== undefined) dailyNewUsers[idx].count++;
+      }
     });
+
+    // 今日新会话与消息按日聚合（消息 timestamp 为 ISO UTC 串，统一转本地日期）
+    let todaySessions = 0;
+    let todayMessages = 0;
+    sessions.forEach((s) => {
+      if (toLocalDateString(s.createdAt) === today) todaySessions++;
+      (s.messages || []).forEach((m) => {
+        const mDate = toLocalDateString(m.timestamp);
+        if (mDate === today) todayMessages++;
+        const idx = mDate ? dayIndex.get(mDate) : undefined;
+        if (idx !== undefined) dailyMessages[idx].count++;
+      });
+    });
+
+    // 热门书籍 TOP5（按浏览热度 searchCount）
+    const topSkills = [...skills]
+      .sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0))
+      .slice(0, 5)
+      .map((s) => ({ id: s.id, title: s.title, searchCount: s.searchCount || 0 }));
 
     return {
       totalUsers: users.length,
       activeVipUsers,
       todayActiveUsers,
+      newUsersToday,
+      newUsers7d,
+      activeUsers7d,
+      activeUsers30d,
+      dailyNewUsers,
+      dailyMessages,
       tierCounts,
       totalSkills: skills.length,
+      topSkills,
       totalOrders: orders.length,
       totalPaidOrders,
       totalRevenue: Number(totalRevenue.toFixed(2)),
       totalChatSessions: sessions.length,
+      todaySessions,
       totalMessages,
+      todayMessages,
       databaseType: 'SQLite (better-sqlite3, WAL)',
       storagePath: SQLITE_DB_PATH,
     };

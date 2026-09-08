@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { db } from '../db.js';
 import { UserProfile } from '../../src/types.js';
 import { JWT_SECRET, ADMIN_PHONE } from '../config.js';
+import { touchUser } from '../services/metrics.js';
 
 export const JWT_EXPIRES_IN = '7d';
 
@@ -85,6 +86,10 @@ export function authMiddleware(req: AuthRequest, res: Response, next: () => void
   const user = extractUserFromRequest(req);
   if (user) {
     req.user = user;
+    // 在线用户打点：仅统计真实登录用户（管理员合成账号与游客不计）
+    if (user.id !== ADMIN_ACCOUNT_ID) {
+      touchUser(user.id);
+    }
   }
   next();
 }

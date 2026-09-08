@@ -5,7 +5,7 @@ import path from 'path';
 import rateLimit from 'express-rate-limit';
 import { db, getTodayString } from '../db.js';
 import { DATA_DIR, ADMIN_PHONE, ADMIN_PASSWORD } from '../config.js';
-import { metrics } from '../services/metrics.js';
+import { metrics, onlineUsers } from '../services/metrics.js';
 import { requireAdmin } from '../middleware/admin.js';
 import { sanitizeUser, signToken, buildAdminProfile } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
@@ -132,6 +132,7 @@ export function registerAdminRoutes(app: Express): void {
     res.json({
       stats: {
         ...baseStats,
+        onlineUsers: onlineUsers(),
         activeSseConnections: metrics.activeSseConnections,
         peakConcurrentSse: metrics.peakConcurrentSse,
         totalRequestsServed: metrics.totalRequestsServed,
