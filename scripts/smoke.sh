@@ -51,7 +51,7 @@ if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_CODE:-}" ]; then
     check "手动升级会员成功" "1" "$(echo "$UPGRADE" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
     check "升级后 tier 生效" "1" "$(echo "$UPGRADE" | grep -c monthly_member | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
     # 建号 → 登录闭环回归（新建账号必须能立即登录；改密后新密码生效、旧密码被拒）
-    check "新建 userId 为10位" "10" "${#NEW_UID}"
+    check "新建 userId 为 usr_+10位顺序数字" "1" "$(echo "$NEW_UID" | grep -Ec '^usr_[0-9]{10}$' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
     check "新建用户可登录" "1" "$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
       -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
     curl -s -o /dev/null -X POST "$BASE/api/admin/users/update" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

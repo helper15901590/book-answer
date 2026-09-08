@@ -211,6 +211,15 @@ export class CommercialSQLDatabase {
     return row ? this.refreshUserDailyQuota(this.mapUserRowToProfile(row)) : undefined;
   }
 
+  // 现存 usr_ 顺序 ID 的数字后缀最大值（无顺序 ID 时为 0）：供新用户 ID 按自然顺序分配
+  public getMaxUserSerial(): number {
+    if (!this.db) return 0;
+    const row = this.db
+      .prepare(`SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) AS maxSerial FROM users WHERE id GLOB 'usr_[0-9]*'`)
+      .get() as any;
+    return Number(row?.maxSerial) || 0;
+  }
+
   public saveUser(user: UserProfile): UserProfile {
     if (!this.db) return user;
     this.db.prepare(

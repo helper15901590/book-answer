@@ -1,18 +1,13 @@
-import crypto from 'crypto';
 import { db } from '../db.js';
 
-// 生成 10 位短用户 ID：固定前缀 usr_ + 6 位随机小写字母数字（36^6 ≈ 21 亿组合，内测规模下碰撞概率可忽略）
-const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
-
+// 生成顺序用户 ID：usr_ + 10 位零填充序号，按自然顺序递增分配（现存最大序号 + 1）
 export function newUserId(): string {
-  for (let attempt = 0; attempt < 10; attempt++) {
-    let suffix = '';
-    for (let i = 0; i < 6; i++) {
-      suffix += ID_CHARS[crypto.randomInt(ID_CHARS.length)];
-    }
-    const id = 'usr_' + suffix;
+  let serial = db.getMaxUserSerial();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    serial += 1;
+    const id = 'usr_' + String(serial).padStart(10, '0');
     if (!db.getUserById(id)) return id;
   }
-  // 理论上不可达：连续 10 次碰撞说明系统状态异常，宁可失败也不产生超长 ID
+  // 理论上不可达：宁可失败也不产生重复 ID
   throw new Error('用户 ID 生成冲突，请重试');
 }
