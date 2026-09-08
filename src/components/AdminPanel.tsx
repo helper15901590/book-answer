@@ -369,7 +369,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const phoneDisplay = u.phone || (u.role === 'guest' ? '游客账号' : (u.id ? `138****${u.id.slice(-4)}` : '13800000000'));
     setEditUserForm({
       phone: phoneDisplay,
-      code: u.password || '',
+      // 密码留空表示不修改（列表数据已脱敏，永不回填旧值）
+      code: '',
       membershipTier: validTier,
     });
   };

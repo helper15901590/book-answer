@@ -225,6 +225,10 @@ export function registerAdminRoutes(app: Express): void {
     // 更新验证码
     const newCode = (code !== undefined ? code : password);
     if (newCode && typeof newCode === 'string' && newCode.trim()) {
+      // 与建号口径一致：密码必须为6位数字，防止误存非法口令导致账号无法登录
+      if (!/^\d{6}$/.test(newCode.trim())) {
+        return res.status(400).json({ error: '密码必须为6位阿拉伯数字' });
+      }
       user.password = bcrypt.hashSync(newCode.trim(), 10);
     }
 
