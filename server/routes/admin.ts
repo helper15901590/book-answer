@@ -5,10 +5,10 @@ import path from 'path';
 import rateLimit from 'express-rate-limit';
 import { GoogleGenAI } from '@google/genai';
 import { db } from '../db.js';
-import { DATA_DIR } from '../config.js';
+import { DATA_DIR, ADMIN_PHONE, ADMIN_PASSWORD } from '../config.js';
 import { metrics } from '../services/metrics.js';
 import { requireAdmin } from '../middleware/admin.js';
-import { sanitizeUser, signToken } from '../middleware/auth.js';
+import { sanitizeUser, signToken, buildAdminProfile } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
 import { resolveGeminiModelName } from '../services/llm/gemini.js';
 import { newUserId } from '../services/ids.js';
@@ -17,8 +17,12 @@ import { UserProfile, MembershipTier, cleanBookTitle } from '../../src/types.js'
 // 后台登录限流：10 次/分/IP（与前台登录限流同口径）
 const adminLoginLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: '尝试过于频繁，请稍后再试' } });
 
+// 管理员密码 bcrypt 哈希惰性缓存（compareSync 恒定时间比对，避免明文直接比较）
+let adminPasswordHash: string | null = null;
+
 export function registerAdminRoutes(app: Express): void {
-  // 后台专用登录端点：管理员为纯后台身份，前台 /api/auth/login 一律拒绝管理员登录
+  // 后台专用登录端点：管理员账号不入库，直接校验环境变量凭证（ADMIN_PHONE/ADMIN_PASSWORD）；
+  // 前台 /api/auth/login 对管理员手机号一律按「账号不存在」处理
   app.post('/api/admin/login', adminLoginLimiter, (req, res) => {
     const { phone, code } = req.body;
     const cleanPhone = (phone || '').trim();
@@ -26,20 +30,20 @@ export function registerAdminRoutes(app: Express): void {
     if (!cleanPhone || !cleanCode) {
       return res.status(400).json({ error: '请输入手机号码与密码' });
     }
-    const user = db.getUserByPhone(cleanPhone);
-    if (!user) {
+    if (!ADMIN_PHONE || !/^\d{6}$/.test(ADMIN_PASSWORD)) {
+      return res.status(500).json({ error: '管理员凭证未配置，请检查环境变量 ADMIN_PHONE/ADMIN_PASSWORD' });
+    }
+    // 非管理员手机号按「账号不存在」提示，不暴露管理员身份
+    if (cleanPhone !== ADMIN_PHONE) {
       return res.status(404).json({ error: '该账号不存在' });
     }
-    // 先验密再判角色，避免未持密码者探测管理员手机号
-    const storedHash = (user.password || '').trim();
-    if (!storedHash || !bcrypt.compareSync(cleanCode, storedHash)) {
+    if (!adminPasswordHash) adminPasswordHash = bcrypt.hashSync(ADMIN_PASSWORD, 10);
+    if (!bcrypt.compareSync(cleanCode, adminPasswordHash)) {
       return res.status(400).json({ error: '登录密码错误，请重新输入' });
     }
-    if (user.role !== 'admin' && !user.isAdmin) {
-      return res.status(403).json({ error: '该账号非管理员，禁止访问后台' });
-    }
-    const token = signToken(user);
-    res.json({ success: true, user: { ...sanitizeUser(user), token }, token });
+    const admin = buildAdminProfile();
+    const token = signToken(admin);
+    res.json({ success: true, user: { ...sanitizeUser(admin), token }, token });
   });
 
   // 素材上传 API

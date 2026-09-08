@@ -2,9 +2,27 @@ import { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { db } from '../db.js';
 import { UserProfile } from '../../src/types.js';
-import { JWT_SECRET } from '../config.js';
+import { JWT_SECRET, ADMIN_PHONE } from '../config.js';
 
 export const JWT_EXPIRES_IN = '7d';
+
+// 管理员账号不入库：JWT 中携带的固定虚拟 ID 与合成身份（后台登录直接校验 .env 凭证）
+export const ADMIN_ACCOUNT_ID = 'admin';
+
+export function buildAdminProfile(token?: string): UserProfile {
+  return {
+    id: ADMIN_ACCOUNT_ID,
+    unionId: 'union_admin_backend',
+    nickname: '管理员',
+    avatar: '',
+    phone: ADMIN_PHONE || undefined,
+    role: 'admin',
+    membershipTier: 'yearly_member',
+    isAdmin: true,
+    dailyMaxChats: 9999,
+    token,
+  };
+}
 
 // Extend Express Request to include authenticated user
 export interface AuthRequest extends Request {
@@ -47,6 +65,10 @@ export function extractUserFromRequest(req: Request): UserProfile | null {
   try {
     const payload = jwt.verify(token, JWT_SECRET) as { id: string; unionId?: string };
     if (payload && payload.id) {
+      // 管理员身份为合成对象（不入库），命中虚拟 ID 直接返回
+      if (payload.id === ADMIN_ACCOUNT_ID) {
+        return buildAdminProfile(token);
+      }
       const user = db.getUserById(payload.id);
       if (user) {
         return { ...user, token };

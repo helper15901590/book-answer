@@ -21,7 +21,7 @@
 - 测试：无测试基础设施
 
 ## 环境变量（.env.local 或 .env，参考 .env.example）
-`JWT_SECRET`（生产必填 ≥16 字符）、`ADMIN_PHONE`/`ADMIN_PASSWORD`（管理员种子）、`DATA_DIR`、`TRUST_PROXY`、`HOST_PORT`（仅 compose 插值）、`GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`
+`JWT_SECRET`（生产必填 ≥16 字符）、`ADMIN_PHONE`/`ADMIN_PASSWORD`（管理后台登录凭证，账号不入库）、`DATA_DIR`、`TRUST_PROXY`、`HOST_PORT`（仅 compose 插值）、`GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`
 
 ## 项目结构
 | 路径 | 职责 |

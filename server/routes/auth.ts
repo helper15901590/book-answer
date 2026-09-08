@@ -46,9 +46,9 @@ export function registerAuthRoutes(app: Express): void {
       return res.status(400).json({ error: '登录密码或验证码错误，请重新输入' });
     }
 
-    // 管理员为纯后台身份：前台登录一律拒绝（后台走 /api/admin/login）
+    // 管理员为纯后台身份且不入库：若库中仍残留历史管理员行，一律按「账号不存在」处理，不向前台暴露身份
     if (user.role === 'admin' || user.isAdmin) {
-      return res.status(403).json({ error: '该账号为后台管理员，不支持前端登录，请从管理后台入口登录' });
+      return res.status(404).json({ error: '该账号不存在，内测阶段账号由管理员统一开通，请联系管理员' });
     }
 
     if (user.role === 'guest') {

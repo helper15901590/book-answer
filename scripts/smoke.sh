@@ -30,13 +30,14 @@ check "SSE 流式端点返回 data: 帧" "1" "$(echo "$SSE_OUT" | grep -c '^data
 
 # 限流注意：/api/auth/login 与 /api/admin/login 各限 10 次/分/IP，本脚本每轮分别请求 5 次与 3 次；1 分钟内连续重跑可能触发 429
 if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_CODE:-}" ]; then
-  # 管理员为纯后台身份：前台登录必须被拒
-  check "管理员前台登录被拒" "403" "$(code -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}")"
+  # 管理员账号不入库且前台不可登录：前台按「账号不存在」提示（404），不暴露管理员身份
+  check "管理员前台登录按账号不存在处理" "404" "$(code -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}")"
   TOKEN=$(curl -s -X POST "$BASE/api/admin/login" -H 'Content-Type: application/json' \
     -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
   if [ -n "$TOKEN" ]; then
     check "管理员后台登录成功" "1" "1"
     check "管理员访问 stats" "200" "$(code -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/stats")"
+    check "用户列表不含管理员账号" "0" "$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/users" | grep -c "$ADMIN_PHONE" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
     check "后台登录响应不含 password" "0" "$(curl -s -X POST "$BASE/api/admin/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}" | grep -c '"password"')"
     SESS="smoke-$(date +%s)"
     REPLY=$(curl -s -X POST "$BASE/api/chat/send" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -56,7 +57,7 @@ if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_CODE:-}" ]; then
     check "新建 userId 为 usr_+10位顺序数字" "1" "$(echo "$NEW_UID" | grep -Ec '^usr_[0-9]{10}$' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
     check "新建用户可登录" "1" "$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
       -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    check "非管理员账号后台登录被拒" "403" "$(code -X POST "$BASE/api/admin/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}")"
+    check "非管理员账号后台登录被拒" "404" "$(code -X POST "$BASE/api/admin/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}")"
     curl -s -o /dev/null -X POST "$BASE/api/admin/users/update" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
       -d "{\"userId\":\"$NEW_UID\",\"code\":\"654321\"}"
     check "改密后新密码可登录" "1" "$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \

@@ -296,6 +296,12 @@ export class CommercialSQLDatabase {
     this.db.prepare(`DELETE FROM users`).run();
   }
 
+  // 删除历史管理员行（管理员身份已不入库，凭证走环境变量），返回删除数量
+  public removeAdminUsers(): number {
+    if (!this.db) return 0;
+    return this.db.prepare(`DELETE FROM users WHERE role = 'admin' OR is_admin = 1`).run().changes;
+  }
+
   private mapUserRowToProfile(row: any): UserProfile {
     let tier: MembershipTier = (row.membership_tier as MembershipTier) || 'free_member';
     if (row.role === 'guest') tier = 'guest';

@@ -32,7 +32,7 @@ cp .env.example .env
 | 键 | 说明 |
 |----|------|
 | `JWT_SECRET` | 必填，≥16 字符，`openssl rand -hex 32` 生成；缺失时生产环境拒绝启动（fail-fast） |
-| `ADMIN_PHONE` / `ADMIN_PASSWORD` | 管理员种子账号，首次启动创建；密码**必须为 6 位数字**（前端强校验），否则回退随机生成并打印一次到日志 |
+| `ADMIN_PHONE` / `ADMIN_PASSWORD` | 管理后台登录凭证（`POST /api/admin/login` 直接比对，**管理员账号不入库**、不出现在用户列表）；密码**必须为 6 位数字**，缺失或格式错误时后台无法登录并在启动日志告警 |
 | `HOST_PORT` | 宿主端口，默认 3000 |
 | `TRUST_PROXY` | 直连部署保持 `0`；仅 Caddy 反代时置 `1`（见 §5） |
 | LLM 各键 | 可留空（离线兜底模板回复），也可管理员登录后在 `/admin` 后台配置（存数据库） |
@@ -44,7 +44,7 @@ cp .env.example .env
 ```bash
 docker compose -f docker/compose.yaml up -d --build
 docker compose -f docker/compose.yaml ps        # 等待 STATUS 变为 healthy（healthcheck 每 30s 探测 /api/health）
-docker compose -f docker/compose.yaml logs app  # 应看到 DB 初始化与「✅ 管理员种子账号已创建」，且无 better-sqlite3 原生模块报错
+docker compose -f docker/compose.yaml logs app  # 应看到 DB 初始化日志且无 better-sqlite3 原生模块报错；若配置了管理员凭证则无「⚠️ 管理员凭证未配置」告警
 ```
 
 数据持久化：compose 将宿主 `./data` 挂载为容器 `/app/data`（`DATA_DIR=/app/data`），数据库（`commercial.sqlite` + WAL/SHM）、上传素材（`assets/`）、备份（`backups/`）全部落在宿主 `data/` 目录，容器重建不丢数据。
