@@ -423,7 +423,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
       const data = await res.json();
       if (data.success) {
-        showToast(`已重置用户 "${u.nickname || u.id}" 的今日额度`);
+        showToast(`已重置用户 "${u.nickname || u.id}" 的调用额度`);
         if (user.id === u.id) {
           setUser((prev) => ({ ...prev, dailyUsedCount: 0, guestUsedCount: 0 }));
         }
@@ -1426,7 +1426,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <th className="py-2.5 px-4 font-medium">用户 / 账号 ID</th>
                           <th className="py-2.5 px-4 font-medium w-32">会员等级</th>
                           <th className="py-2.5 px-4 font-medium w-36">会员有效期</th>
-                          <th className="py-2.5 px-4 font-medium w-32 text-right">本月调用额度</th>
+                          <th className="py-2.5 px-4 font-medium w-32 text-right">调用额度</th>
                           <th className="py-2.5 px-4 font-medium text-center w-36">操作</th>
                         </tr>
                       </thead>
@@ -1485,6 +1485,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             }
 
                             const used = isGuest ? (u.guestUsedCount || 0) : (u.dailyUsedCount || 0);
+                            // 额度周期单位：月/季/年度会员按月，游客/普通会员按日
+                            const quotaUnit = effectiveTier === 'monthly_member' || effectiveTier === 'quarterly_member' || effectiveTier === 'yearly_member' ? '次/月' : '次/日';
 
                             return (
                               <tr key={u.id} className="hover:bg-slate-50/60 transition-colors">
@@ -1507,7 +1509,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   </span>
                                 </td>
                                 <td className="py-3 px-4 text-right font-mono text-slate-600 whitespace-nowrap">
-                                  {used} / {maxLimit} 次/月
+                                  {used} / {maxLimit} {quotaUnit}
                                 </td>
                                 <td className="py-3 px-4 text-center whitespace-nowrap">
                                   <div className="flex items-center justify-center gap-1">
@@ -1521,7 +1523,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                     </button>
                                     <button
                                       type="button"
-                                      title="重置本月调用额度"
+                                      title="重置调用额度"
                                       onClick={() => handleResetUserQuota(u)}
                                       className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-900 rounded-lg transition-colors cursor-pointer"
                                     >
@@ -1563,7 +1565,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <thead>
                       <tr className="bg-slate-50/70 border-b border-slate-200/80 text-slate-500 font-medium">
                         <th className="py-2.5 px-4 font-medium">会员等级 / 用户类型</th>
-                        <th className="py-2.5 px-4 font-medium w-48">每月模型调用上限</th>
+                        <th className="py-2.5 px-4 font-medium w-48">模型调用上限</th>
                         <th className="py-2.5 px-4 text-slate-400 font-normal">权益说明</th>
                       </tr>
                     </thead>
@@ -1590,11 +1592,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               })}
                               className="w-full px-2.5 py-1.5 bg-white border border-slate-200/90 rounded-lg text-slate-900 font-mono text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
                             />
-                            <span className="text-slate-400 text-[11px] shrink-0">次/月</span>
+                            <span className="text-slate-400 text-[11px] shrink-0">次/日</span>
                           </div>
                         </td>
                         <td className="py-3.5 px-4 text-slate-500 text-xs">
-                          免登录访问用户的每月基础调用频次
+                          免登录访问用户的每日基础调用频次（每日零点刷新）
                         </td>
                       </tr>
 
@@ -1620,11 +1622,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               })}
                               className="w-full px-2.5 py-1.5 bg-white border border-slate-200/90 rounded-lg text-slate-900 font-mono text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
                             />
-                            <span className="text-slate-400 text-[11px] shrink-0">次/月</span>
+                            <span className="text-slate-400 text-[11px] shrink-0">次/日</span>
                           </div>
                         </td>
                         <td className="py-3.5 px-4 text-slate-500 text-xs">
-                          注册并完成手机或微信登录后的每月赠送额度
+                          注册并完成手机或微信登录后的每日赠送额度（每日零点刷新）
                         </td>
                       </tr>
 
@@ -1722,7 +1724,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
 
                 <p className="text-[11px] text-slate-400 px-1">
-                  提示：修改月度/季度/年度会员及普通用户的每月调用上限后，点击下方“保存资源配置”按钮即可实时生效。
+                  提示：修改调用上限后（游客/普通会员按日计算，月度/季度/年度会员按月计算），点击下方“保存资源配置”按钮即可实时生效。
                 </p>
 
                 <div className="flex justify-end pt-2">

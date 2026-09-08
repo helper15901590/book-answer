@@ -37,7 +37,7 @@ export function checkAndConsumeQuota(
         allowed: false,
         status: 401,
         error: 'GUEST_LIMIT_REACHED',
-        message: `您当前还未注册登录，享有的体验额度${guestLimit}次已用完，请登录后继续体验。`,
+        message: `您当前还未注册登录，今日体验额度${guestLimit}次已用完（每日零点刷新），请登录后继续体验。`,
         tier: 'guest',
       };
     }
@@ -58,7 +58,7 @@ export function checkAndConsumeQuota(
         allowed: false,
         status: 403,
         error: 'PAYWALL_REQUIRED',
-        message: `本月普通会员免费额度已达上限 (${freeMemberLimit}/${freeMemberLimit}次)。开通月度/季度/年度会员，尊享每月超高频原著导师畅答与极速推理！`,
+        message: `今日普通会员免费额度已达上限 (${freeMemberLimit}/${freeMemberLimit}次)，每日零点自动刷新。开通月度/季度/年度会员，尊享每月超高频原著导师畅答与极速推理！`,
         tier: 'free_member',
       };
     }

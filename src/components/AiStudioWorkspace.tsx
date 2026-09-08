@@ -12,7 +12,7 @@ import {
   getEffectiveMembershipTier,
   getMembershipTierLabel,
 } from '../types';
-import { GUEST_USER } from '../data/initialData';
+import { loadGuestUser, rememberGuestCount } from '../lib/guestQuota';
 import { SkillCard } from './SkillCard';
 import { BookDetailModal } from './BookDetailModal';
 import { MembershipModal } from './MembershipModal';
@@ -338,6 +338,12 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       ? user.guestUsedCount || 0
       : user.dailyUsedCount || 0;
 
+  // 额度周期：月/季/年度会员按月计算，游客/普通会员按日计算
+  const isMonthlyQuota =
+    effectiveTier === 'monthly_member' ||
+    effectiveTier === 'quarterly_member' ||
+    effectiveTier === 'yearly_member';
+
   // Handle deleting a session
   const handleDeleteSession = (sessionId: string) => {
     const token = localStorage.getItem('auth_token');
@@ -576,7 +582,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     } catch (e) {
       console.warn('Logout API error:', e);
     }
-    setUser(GUEST_USER);
+    setUser(loadGuestUser());
     setSessions([]);
     setActiveSessionId(null);
     setMainView('market');
@@ -590,7 +596,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     if (effectiveTier === 'guest') {
       const guestLimit = limits.guestUser ?? 3;
       if ((user.guestUsedCount || 0) >= guestLimit) {
-        showToast(`您当前还未注册登录，享有的体验额度${guestLimit}次已用完，请登录后继续体验。`, 'warning');
+        showToast(`您当前还未注册登录，今日体验额度${guestLimit}次已用完（每日零点刷新），请登录后继续体验。`, 'warning');
         return false;
       }
       return true;
@@ -600,7 +606,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     const used = user.dailyUsedCount || 0;
     if (used >= currentQuotaLimit) {
       if (effectiveTier === 'free_member') {
-        showToast(`本月普通会员免费额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)，开通VIP会员可享更高调用额度。`, 'info');
+        showToast(`今日普通会员免费额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)，每日零点自动刷新，开通VIP会员可享更高调用额度。`, 'info');
       } else {
         showToast(`您本月${memberBadgeText}对话额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)，每月1号零点自动刷新。`, 'info');
       }
@@ -611,6 +617,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
   const consumeQuota = () => {
     if (user.role === 'guest') {
+      // 游客额度按日计算：当日已用次数持久化，刷新页面不清零，跨天自动归零
+      rememberGuestCount((user.guestUsedCount || 0) + 1);
       setUser((prev) => ({
         ...prev,
         guestUsedCount: (prev.guestUsedCount || 0) + 1,
@@ -698,7 +706,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         if (response.status === 401) {
           showToast(errJson.message || '游客今日体验额度已用完，请登录会员账号继续。', 'warning');
         } else if (response.status === 402 || response.status === 403 || response.status === 429) {
-          showToast(errJson.message || '今日对话额度已用完，请明日再来。', 'info');
+          showToast(errJson.message || '对话额度已用完，请稍后再试。', 'info');
         }
         throw new Error(errJson.message || errJson.error || `HTTP ${response.status}`);
       }
@@ -732,11 +740,12 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               setCurrentStreamingText(accumulatedText);
             }
             if (data.user) {
-              setUser(data.user);
+              // 游客态服务端无记录，跳过同步以免清零本地当日计数
+              setUser((prev) => (prev.role === 'guest' ? prev : data.user));
             }
             if (data.done) {
               finalizedMsg = data.assistantMessage;
-              if (data.user) setUser(data.user);
+              if (data.user) setUser((prev) => (prev.role === 'guest' ? prev : data.user));
             }
           } catch {
             // ignore malformed SSE line
@@ -925,10 +934,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                   {/* Quota Stats */}
                   <div className="space-y-1.5 px-0.5 py-1">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-600 font-medium">本月调用额度</span>
+                      <span className="text-slate-600 font-medium">{isMonthlyQuota ? '本月调用额度' : '今日调用额度'}</span>
                       <span className="font-mono font-semibold text-slate-800">
                         {currentQuotaUsed} / {currentQuotaLimit}{' '}
-                        <span className="text-[11px] text-gray-400 font-mono font-normal">次/月</span>
+                        <span className="text-[11px] text-gray-400 font-mono font-normal">{isMonthlyQuota ? '次/月' : '次/日'}</span>
                       </span>
                     </div>
                     <div className="w-full bg-gray-100 border border-gray-200/60 rounded-full h-1.5 overflow-hidden">

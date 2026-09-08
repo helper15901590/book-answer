@@ -335,8 +335,15 @@ export class CommercialSQLDatabase {
       }
     }
 
-    // 2. Monthly reset (Reset quota when entering a new month)
-    if (!user.lastActiveDate || !user.lastActiveDate.startsWith(currentMonth)) {
+    // 2. 配额周期重置：游客/普通会员按日重置（零点刷新），月/季/年度会员按月重置（进入新月份时刷新）
+    const isPaidTier =
+      user.membershipTier === 'monthly_member' ||
+      user.membershipTier === 'quarterly_member' ||
+      user.membershipTier === 'yearly_member';
+    const periodChanged = isPaidTier
+      ? !user.lastActiveDate || !user.lastActiveDate.startsWith(currentMonth)
+      : user.lastActiveDate !== today;
+    if (periodChanged) {
       user.lastActiveDate = today;
       user.dailyUsedCount = 0;
       user.guestUsedCount = 0;

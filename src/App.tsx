@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { UserProfile, Skill, LLMConfig, getEffectiveMembershipTier } from './types';
-import { INITIAL_SKILLS, GUEST_USER, DEFAULT_LLM_CONFIG } from './data/initialData';
+import { INITIAL_SKILLS, DEFAULT_LLM_CONFIG } from './data/initialData';
+import { loadGuestUser } from './lib/guestQuota';
 import { AiStudioWorkspace } from './components/AiStudioWorkspace';
 import { LoginModal } from './components/LoginModal';
 
 export default function App() {
-  const [user, setUser] = useState<UserProfile>(GUEST_USER);
+  // 游客额度按日计算：初始状态携带 localStorage 中的今日已用次数
+  const [user, setUser] = useState<UserProfile>(loadGuestUser);
   const [skills, setSkills] = useState<Skill[]>(INITIAL_SKILLS);
   const [llmConfig, setLlmConfig] = useState<LLMConfig>(DEFAULT_LLM_CONFIG);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
@@ -21,7 +23,8 @@ export default function App() {
     return fetch('/api/auth/me', { headers })
       .then((res) => res.json())
       .then((data) => {
-        if (data.user) {
+        // 未登录时服务端返回默认游客载荷（计数为 0），跳过同步以免清零本地当日计数
+        if (data.user && data.user.role !== 'guest') {
           setUser(data.user);
         }
         return data.user;
