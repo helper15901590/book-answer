@@ -731,6 +731,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       let buffer = '';
       let accumulatedText = '';
       let finalizedMsg: ChatMessage | null = null;
+      // 服务端错误帧（如上游 LLM 失败）：离线模板兜底已移除，需显式呈现而非静默忽略
+      let streamError = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -749,6 +751,9 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
             if (data.delta) {
               accumulatedText += data.delta;
               setCurrentStreamingText(accumulatedText);
+            }
+            if (data.error) {
+              streamError = String(data.error);
             }
             if (data.user) {
               // 游客态服务端无记录，跳过同步以免清零本地当日计数；管理员载荷主前端一律不呈现
@@ -771,6 +776,9 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       }
 
       if (abortController.signal.aborted) return;
+
+      // 服务端明确报错（上游 LLM 不可用等）：走统一失败路径（回滚游客额度 + 服务提示气泡）
+      if (streamError) throw new Error(streamError);
 
       if (thinkingTimerRef.current) {
         clearInterval(thinkingTimerRef.current);

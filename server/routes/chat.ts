@@ -5,8 +5,6 @@ import { AuthRequest, sanitizeUser } from '../middleware/auth.js';
 import { metrics } from '../services/metrics.js';
 import { checkAndConsumeQuota } from '../services/quota.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl, sanitizeMessagesForLLM } from '../services/llm/sanitize.js';
-import { callGeminiResponse } from '../services/llm/gemini.js';
-import { generateDeepBookDistillation } from '../services/llm/offline.js';
 import { GUEST_USER } from '../../src/data/initialData.js';
 import { ChatMessage, cleanBookTitle } from '../../src/types.js';
 
@@ -136,6 +134,15 @@ export function registerChatRoutes(app: Express): void {
     const skill = (session ? db.getSkillById(session.skillId) : null) || db.getSkills()[0];
     const llmConfig = db.getLLMConfig();
 
+    // LLM 配置单路径：管理后台（数据库）优先，其次环境变量；OpenAI 兼容接口（DeepSeek / 阿里 DashScope 二选一）
+    const apiKey = cleanApiKey((llmConfig.apiKey || llmConfig.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '').trim());
+    const apiBaseUrl = (llmConfig.apiBaseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').trim();
+    const modelUsed = (llmConfig.primaryModel || process.env.DEEPSEEK_MODEL || 'deepseek-chat').trim();
+    // 未配置：在配额消耗前拒绝（离线模板兜底已移除，不再产出伪造回复，也不浪费用户配额）
+    if (isInvalidOrPlaceholderKey(apiKey)) {
+      return res.status(503).json({ error: 'AI 服务尚未配置，请联系管理员在后台设置大模型 API' });
+    }
+
     // Check Membership Quota
     const quota = checkAndConsumeQuota(currentUser, skill, llmConfig);
     if (!quota.allowed) {
@@ -180,12 +187,6 @@ export function registerChatRoutes(app: Express): void {
       metrics.activeSseConnections = Math.max(0, metrics.activeSseConnections - 1);
     });
 
-    const rawApiKey = (llmConfig.apiKey || llmConfig.deepseekApiKey || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || '').trim();
-    const apiKey = cleanApiKey(rawApiKey);
-    const apiBaseUrl = (llmConfig.apiBaseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').trim();
-    const modelUsed = (llmConfig.primaryModel || process.env.DEEPSEEK_MODEL || 'deepseek-chat').trim();
-    const geminiKey = process.env.GEMINI_API_KEY || (apiKey.startsWith('AIza') ? apiKey : '');
-
     let fullAssistantReply = '';
     const startTime = Date.now();
 
@@ -197,19 +198,13 @@ export function registerChatRoutes(app: Express): void {
       }
     };
 
-    let realStreamSuccess = false;
+    const systemPrompt = (skill?.systemPrompt || '').trim();
 
-    let systemPrompt = (skill?.systemPrompt || '').trim();
-
-    // 1. Prepare sanitized messages payload for LLM
+    // 准备消毒后的 LLM 消息载荷
     const messagesPayload = sanitizeMessagesForLLM(systemPrompt, session?.messages || [], messageText);
 
-    const isExplicitGemini = modelUsed.toLowerCase().includes('gemini');
-
-    const hasValidCustomKey = !isInvalidOrPlaceholderKey(apiKey);
-
-    // Tier 1: Primary Route: If custom OpenAI/DeepSeek API Key is configured and valid
-    if (hasValidCustomKey && !isExplicitGemini) {
+    // OpenAI 兼容主路（DeepSeek / 阿里 DashScope 二选一）——唯一回复来源（Gemini 备用与离线模板兜底已移除）
+    {
       try {
         const targetUrl = resolveOpenAIUrl(apiBaseUrl);
         const isReasoner =
@@ -267,7 +262,6 @@ export function registerChatRoutes(app: Express): void {
                   const choice = parsed.choices?.[0];
                   const delta = choice?.delta?.content ?? choice?.delta?.reasoning_content ?? '';
                   if (delta) {
-                    realStreamSuccess = true;
                     fullAssistantReply += delta;
                     writeSSE({ delta, fullText: fullAssistantReply });
                   }
@@ -279,57 +273,22 @@ export function registerChatRoutes(app: Express): void {
           } else {
             // Upstream returned HTTP error status (401, 403, 500, etc.)
             const errText = await upstreamRes.text().catch(() => '');
-            console.warn(`Upstream API failed (HTTP ${upstreamRes.status}): ${errText.slice(0, 150)}. Falling back to Gemini...`);
+            console.warn(`上游 LLM 调用失败 (HTTP ${upstreamRes.status}): ${errText.slice(0, 150)}`);
           }
         } finally {
           // 超时清理推迟到 body 读取结束后：此前响应头一到就清理，body 阶段停滞将永久挂起
           clearTimeout(timeoutTimer);
         }
       } catch (err: any) {
-        console.warn('Primary LLM streaming exception, falling back to Gemini:', err?.message || err);
+        console.warn('主路 LLM 流式调用异常:', err?.message || err);
       }
     }
 
-    // Tier 2: If Tier 1 did not produce response, fall back to server-side Gemini
-    if (isClientConnected && (!realStreamSuccess || !fullAssistantReply) && geminiKey) {
-      try {
-        const text = await callGeminiResponse({
-          geminiKey,
-          targetModel: modelUsed,
-          systemPrompt,
-          messageText,
-        });
-        if (text) {
-          realStreamSuccess = true;
-          fullAssistantReply = text;
-          // Stream chunks to client for smooth typing experience
-          const chunkSize = 20;
-          let currentProgress = '';
-          for (let i = 0; i < text.length; i += chunkSize) {
-            if (!isClientConnected) break;
-            const delta = text.slice(i, i + chunkSize);
-            currentProgress += delta;
-            writeSSE({ delta, fullText: currentProgress });
-          }
-        }
-      } catch (geminiErr: any) {
-        console.warn('Gemini stream failed, falling back to distillation engine:', geminiErr?.message || geminiErr);
-      }
-    }
-
-    // Tier 3: If both external LLMs are unavailable, use high-quality book distillation
-    if (isClientConnected && (!realStreamSuccess || !fullAssistantReply)) {
-      const distillation = generateDeepBookDistillation(skill, messageText, session?.messages || []);
-      realStreamSuccess = true;
-      fullAssistantReply = distillation;
-      const chunkSize = 24;
-      let currentProgress = '';
-      for (let i = 0; i < distillation.length; i += chunkSize) {
-        if (!isClientConnected) break;
-        const delta = distillation.slice(i, i + chunkSize);
-        currentProgress += delta;
-        writeSSE({ delta, fullText: currentProgress });
-      }
+    // 上游失败且未流出任何内容：明确报错并结束流（不再伪造模板回复，也不落库空的 assistant 消息）
+    if (!fullAssistantReply) {
+      writeSSE({ error: 'AI 服务暂时不可用，请稍后重试' });
+      res.end();
+      return;
     }
 
     // Save final assistant message to DB
@@ -395,6 +354,15 @@ export function registerChatRoutes(app: Express): void {
     const skill = (session ? db.getSkillById(session.skillId) : null) || db.getSkills()[0];
     const llmConfig = db.getLLMConfig();
 
+    // LLM 配置单路径：管理后台（数据库）优先，其次环境变量；OpenAI 兼容接口（DeepSeek / 阿里 DashScope 二选一）
+    const apiKey = cleanApiKey((llmConfig.apiKey || llmConfig.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '').trim());
+    const apiBaseUrl = (llmConfig.apiBaseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').trim();
+    const modelUsed = (llmConfig.primaryModel || process.env.DEEPSEEK_MODEL || 'deepseek-chat').trim();
+    // 未配置：在配额消耗前拒绝（离线模板兜底已移除，不再产出伪造回复，也不浪费用户配额）
+    if (isInvalidOrPlaceholderKey(apiKey)) {
+      return res.status(503).json({ error: 'AI 服务尚未配置，请联系管理员在后台设置大模型 API' });
+    }
+
     const quota = checkAndConsumeQuota(currentUser, skill, llmConfig);
     if (!quota.allowed) {
       return res.status(quota.status || 403).json({
@@ -414,25 +382,16 @@ export function registerChatRoutes(app: Express): void {
       session.messages.push(userMsg);
     }
 
-    const rawApiKey = (llmConfig.apiKey || llmConfig.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '').trim();
-    const apiKey = cleanApiKey(rawApiKey);
-    const apiBaseUrl = (llmConfig.apiBaseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').trim();
-    const modelUsed = (llmConfig.primaryModel || process.env.DEEPSEEK_MODEL || 'deepseek-chat').trim();
-    const geminiKey = process.env.GEMINI_API_KEY || (apiKey.startsWith('AIza') ? apiKey : '');
-
     let assistantReply = '';
     const startTime = Date.now();
 
-    let systemPrompt = (skill?.systemPrompt || '').trim();
+    const systemPrompt = (skill?.systemPrompt || '').trim();
 
-    // 1. Prepare sanitized messages payload for LLM
+    // 准备消毒后的 LLM 消息载荷
     const messagesPayload = sanitizeMessagesForLLM(systemPrompt, session?.messages || [], messageText);
-    const isExplicitGemini = modelUsed.toLowerCase().includes('gemini');
 
-    const hasValidCustomKey = !isInvalidOrPlaceholderKey(apiKey);
-
-    // Tier 1: Primary Route: If custom OpenAI/DeepSeek API Key is configured
-    if (hasValidCustomKey && !isExplicitGemini) {
+    // OpenAI 兼容主路（DeepSeek / 阿里 DashScope 二选一）——唯一回复来源（Gemini 备用与离线模板兜底已移除）
+    {
       try {
         const targetUrl = resolveOpenAIUrl(apiBaseUrl);
         const isReasoner =
@@ -469,34 +428,24 @@ export function registerChatRoutes(app: Express): void {
             assistantReply = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || '';
           } else {
             const errText = await resUpstream.text().catch(() => '');
-            console.warn(`Upstream sync call failed (HTTP ${resUpstream.status}): ${errText.slice(0, 150)}. Falling back to Gemini...`);
+            console.warn(`上游 LLM 同步调用失败 (HTTP ${resUpstream.status}): ${errText.slice(0, 150)}`);
           }
         } finally {
           // 超时覆盖到 body 阶段（.json()），此前响应头一到即清理
           clearTimeout(timeoutTimer);
         }
       } catch (e: any) {
-        console.warn('OpenAI sync call error, falling back to Gemini:', e?.message || e);
+        console.warn('主路 LLM 同步调用异常:', e?.message || e);
       }
     }
 
-    // Tier 2: If Tier 1 failed or no valid key, fall back to Gemini
-    if (!assistantReply && geminiKey) {
-      try {
-        assistantReply = await callGeminiResponse({
-          geminiKey,
-          targetModel: modelUsed,
-          systemPrompt,
-          messageText,
-        });
-      } catch (e: any) {
-        console.warn('Gemini sync call error, falling back to distillation engine:', e?.message || e);
-      }
-    }
-
-    // Tier 3: If both external LLMs are unavailable, use high-quality book distillation
     if (!assistantReply) {
-      assistantReply = generateDeepBookDistillation(skill, messageText, session?.messages || []);
+      // 上游失败明确报错：用户消息仍落库保留，不再伪造模板回复
+      if (session) {
+        session.updatedAt = new Date().toISOString();
+        db.saveChatSession(session);
+      }
+      return res.status(502).json({ error: 'AI 服务暂时不可用，请稍后重试' });
     }
 
     const thinkingTime = Number(((Date.now() - startTime) / 1000).toFixed(2));

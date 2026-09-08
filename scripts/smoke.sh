@@ -21,12 +21,19 @@ check "webhook 已移除" "404" "$(code -X POST "$BASE/api/payment/webhook")"
 check "create-membership-order 已移除" "404" "$(code -X POST "$BASE/api/payment/create-membership-order" -H 'Content-Type: application/json' -d '{}')"
 check "未知手机号登录被拒" "404" "$(code -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d '{"phone":"19999999999","code":"123456"}')"
 
-# SSE 流式端点（未认证游客载荷，离线兜底也应输出 data: 帧）
+# SSE 流式端点（未认证游客载荷；离线模板兜底已移除——已配置 LLM 时输出 data: 帧，未配置时 503 明确报错）
 # 限流注意：匿名聊天限流 10 次/分/IP，本脚本匿名聊天请求共 3 次（SSE 1 + 畸形/超长消息体 2，管理员聊天链路带 token 被限流跳过），1 分钟内重跑无需等待
 SSE_SESS="smoke-sse-$(date +%s)"
-SSE_OUT=$(curl -sN --max-time 30 -X POST "$BASE/api/chat/stream" -H 'Content-Type: application/json' \
+SSE_TMP=$(mktemp)
+SSE_STATUS=$(curl -sN --max-time 90 -o "$SSE_TMP" -w '%{http_code}' -X POST "$BASE/api/chat/stream" -H 'Content-Type: application/json' \
   -d "{\"sessionId\":\"$SSE_SESS\",\"skillId\":\"skill-santi\",\"messageText\":\"你好\"}")
-check "SSE 流式端点返回 data: 帧" "1" "$(echo "$SSE_OUT" | grep -c '^data:' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+if [ "$SSE_STATUS" = "200" ]; then
+  check "SSE 流式端点返回 data: 帧（LLM 已配置）" "1" "$(grep -c '^data:' "$SSE_TMP" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+else
+  check "LLM 未配置时 SSE 返回 503" "503" "$SSE_STATUS"
+  check "LLM 未配置错误响应为 JSON" "1" "$(grep -c '"error"' "$SSE_TMP" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+fi
+rm -f "$SSE_TMP"
 
 # 入参硬化防回归：非字符串 messageText 曾可触发未处理 rejection 崩掉整个进程（Express 4 + Node 22）
 check "畸形消息体（非字符串）被拒 400" "400" "$(code -X POST "$BASE/api/chat/stream" -H 'Content-Type: application/json' \
@@ -51,9 +58,15 @@ if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_CODE:-}" ]; then
     check "用户列表不含管理员账号" "0" "$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/users" | grep -c "$ADMIN_PHONE" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
     check "后台登录响应不含 password" "0" "$(curl -s -X POST "$BASE/api/admin/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}" | grep -c '"password"')"
     SESS="smoke-$(date +%s)"
-    REPLY=$(curl -s -X POST "$BASE/api/chat/send" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    SEND_TMP=$(mktemp)
+    SEND_STATUS=$(curl -s --max-time 90 -o "$SEND_TMP" -w '%{http_code}' -X POST "$BASE/api/chat/send" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
       -d "{\"sessionId\":\"$SESS\",\"skillId\":\"skill-santi\",\"messageText\":\"你好\"}")
-    check "聊天链路可用（含离线兜底）" "1" "$(echo "$REPLY" | grep -c assistantMessage | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+    if [ "$SEND_STATUS" = "200" ]; then
+      check "聊天链路可用（LLM 已配置）" "1" "$(grep -c assistantMessage "$SEND_TMP" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+    else
+      check "LLM 未配置/失败时聊天返回明确错误（无伪造模板）" "1" "$(echo "$SEND_STATUS" | grep -Ec '^(502|503)$' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+    fi
+    rm -f "$SEND_TMP"
     # 管理员建号 → 手动升级会员链路（spec §6.2）
     NEW_PHONE="199$(date +%s | tail -c 9)"
     CREATE=$(curl -s -X POST "$BASE/api/admin/users/create" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

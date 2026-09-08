@@ -35,7 +35,7 @@ cp .env.example .env
 | `ADMIN_PHONE` / `ADMIN_PASSWORD` | 管理后台登录凭证（`POST /api/admin/login` 直接比对，**管理员账号不入库**、不出现在用户列表）；密码**必须为 6 位数字**，缺失或格式错误时后台无法登录并在启动日志告警 |
 | `HOST_PORT` | 宿主端口，默认 3000 |
 | `TRUST_PROXY` | 直连部署保持 `0`；仅 Caddy 反代时置 `1`（见 §5） |
-| LLM 各键 | 可留空（离线兜底模板回复），也可管理员登录后在 `/admin` 后台配置（存数据库） |
+| LLM 各键 | **OpenAI 兼容接口单路径，二选一**：DeepSeek（`DEEPSEEK_BASE_URL=https://api.deepseek.com/v1` + `DEEPSEEK_MODEL=deepseek-chat`）或阿里云百炼 DashScope（`DEEPSEEK_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1` + `DEEPSEEK_MODEL=qwen-max` 等）。也可留空由管理员登录后在 `/admin` 后台配置（存数据库，优先级更高）。**未配置有效密钥时聊天接口返回 503 明确报错**（离线模板兜底已移除，不再产出伪造回复） |
 
 > **HOST_PORT 特别注意**：compose 的端口映射写作 `"${HOST_PORT:-3000}:3000"`，这里的变量插值由 **docker compose 自己**完成，读取的是 **docker/ 目录（compose 文件所在目录）下的 `.env` 或 shell 环境变量**，而 `env_file: ../.env` 只注入**容器内运行时变量**、不参与插值。因此改宿主端口有两种方式：① `HOST_PORT=8080 docker compose -f docker/compose.yaml up -d`；② 在 `docker/` 目录下另建一个只含 `HOST_PORT` 的 `.env`。写在项目根 `.env` 里的 `HOST_PORT` **不会生效**。
 
@@ -65,7 +65,7 @@ docker compose -f docker/compose.yaml logs app  # 应看到 DB 初始化日志�
 BASE=http://<IP>:3000 ADMIN_PHONE=<管理员手机号> ADMIN_CODE=<管理员6位密码> bash scripts/smoke.sh
 ```
 
-脚本断言：health 200；公开配置不含 `apiKey`、含 `dailyLimits`；游客访问 admin 端点 403；注册/支付端点已移除（404）；未知手机号登录 404；管理员前台登录按「账号不存在」处理；后台登录 → stats → 用户列表不含管理员 → 登录响应不含 password → 聊天链路（无 LLM key 时走离线兜底）；畸形/超长消息体 400 且进程存活；跨用户会话写入 403；后端构建产物 `server.cjs` 不可公网下载；首页与 `/admin` 入口可达。全部通过时退出码为 0。
+脚本断言：health 200；公开配置不含 `apiKey`、含 `dailyLimits`；游客访问 admin 端点 403；注册/支付端点已移除（404）；未知手机号登录 404；管理员前台登录按「账号不存在」处理；后台登录 → stats → 用户列表不含管理员 → 登录响应不含 password → 聊天链路（已配置 LLM 时断言正常回复，未配置时断言 503/502 明确错误而非伪造模板）；畸形/超长消息体 400 且进程存活；跨用户会话写入 403；后端构建产物 `server.cjs` 不可公网下载；首页与 `/admin` 入口可达。全部通过时退出码为 0。
 
 > **限流说明**：登录接口限流 10 次/分/IP，冒烟脚本每轮发起前台登录 5 次、后台登录 3 次，均在预算内；但**1 分钟内反复重跑脚本可能撞上登录限流**（返回 429 导致断言失败），重跑请间隔 1 分钟。
 

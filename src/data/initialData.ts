@@ -275,7 +275,6 @@ export const DEFAULT_PRIVACY_POLICY = `# 隐私政策
 export const DEFAULT_LLM_CONFIG: LLMConfig = {
   apiBaseUrl: 'https://api.deepseek.com/v1',
   apiKey: '',
-  primaryProvider: 'deepseek',
   primaryModel: 'deepseek-chat',
   timeoutSec: 30,
   maxTokens: 4096,

@@ -1,9 +1,9 @@
 import { db } from '../../db.js';
 import { cleanBookTitle } from '../../../src/types.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from './sanitize.js';
-import { callGeminiResponse, resolveGeminiModelName } from './gemini.js';
 
-// Generate grounded recommended follow-up questions from uploaded Skill/mentor document using LLM
+// 调用主路 LLM 基于 Skill 原著文档生成有据推荐追问（OpenAI 兼容接口，DeepSeek / 阿里 DashScope 二选一）；
+// LLM 未配置或调用失败时返回空数组——离线模板兜底已移除，不再产出伪造内容
 export async function generateRecommendedQuestionsFromLLM({
   systemPrompt,
   title,
@@ -14,13 +14,12 @@ export async function generateRecommendedQuestionsFromLLM({
   author?: string;
 }): Promise<string[]> {
   const llmConfig = db.getLLMConfig();
-  const rawApiKey = (llmConfig.apiKey || llmConfig.deepseekApiKey || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || '').trim();
-  const apiKey = cleanApiKey(rawApiKey);
+  const apiKey = cleanApiKey((llmConfig.apiKey || llmConfig.deepseekApiKey || process.env.DEEPSEEK_API_KEY || '').trim());
   const apiBaseUrl = (llmConfig.apiBaseUrl || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').trim();
   const modelUsed = (llmConfig.primaryModel || process.env.DEEPSEEK_MODEL || 'deepseek-chat').trim();
-  const geminiKey = process.env.GEMINI_API_KEY || (apiKey.startsWith('AIza') ? apiKey : '');
-  const hasValidCustomKey = !isInvalidOrPlaceholderKey(apiKey);
-  const isExplicitGemini = modelUsed.toLowerCase().includes('gemini');
+  if (isInvalidOrPlaceholderKey(apiKey)) {
+    return [];
+  }
 
   const docSnippet = (systemPrompt || '').slice(0, 4000);
   const cleanTitle = cleanBookTitle(title || '本书');
@@ -45,65 +44,47 @@ ${docSnippet}
 
   let rawOutput = '';
 
-  // 1. Try Custom OpenAI / DeepSeek if configured
-  if (hasValidCustomKey && !isExplicitGemini) {
-    try {
-      const targetUrl = resolveOpenAIUrl(apiBaseUrl);
-      const isReasoner =
-        modelUsed.includes('reasoner') ||
-        modelUsed.includes('r1') ||
-        modelUsed.includes('o1') ||
-        modelUsed.includes('o3');
+  try {
+    const targetUrl = resolveOpenAIUrl(apiBaseUrl);
+    const isReasoner =
+      modelUsed.includes('reasoner') ||
+      modelUsed.includes('r1') ||
+      modelUsed.includes('o1') ||
+      modelUsed.includes('o3');
 
-      const payload: any = {
-        model: modelUsed,
-        messages: [
-          { role: 'system', content: '你是一位精通图书知识体系的专家，只输出合法的 JSON 字符串数组。' },
-          { role: 'user', content: prompt },
-        ],
-        max_tokens: 600,
-      };
-      if (!isReasoner) {
-        payload.temperature = 0.7;
-      }
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15000);
-      const res = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (res.ok) {
-        const json: any = await res.json();
-        rawOutput = json.choices?.[0]?.message?.content || '';
-      }
-    } catch (e) {
-      console.warn('Custom LLM question generation failed, trying fallback:', e);
+    const payload: any = {
+      model: modelUsed,
+      messages: [
+        { role: 'system', content: '你是一位精通图书知识体系的专家，只输出合法的 JSON 字符串数组。' },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 600,
+    };
+    if (!isReasoner) {
+      payload.temperature = 0.7;
     }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const json: any = await res.json();
+      rawOutput = json.choices?.[0]?.message?.content || '';
+    }
+  } catch (e) {
+    console.warn('主路 LLM 问题生成失败:', e);
   }
 
-  // 2. Try Gemini if custom failed or gemini configured
-  if (!rawOutput && geminiKey) {
-    try {
-      rawOutput = await callGeminiResponse({
-        geminiKey,
-        targetModel: resolveGeminiModelName(modelUsed),
-        systemPrompt: '你是一位精通图书知识体系的专家，只输出合法的 JSON 字符串数组。',
-        messageText: prompt,
-        timeoutMs: 30000,
-      });
-    } catch (e) {
-      console.warn('Gemini question generation failed:', e);
-    }
-  }
-
-  // 3. Parse JSON output
+  // 解析 JSON 输出（解析失败时尽力按行提取；仍无结果则返回空数组，不做模板兜底）
   let parsed: string[] = [];
   if (rawOutput) {
     try {
@@ -120,35 +101,6 @@ ${docSnippet}
       if (lines.length >= 2) {
         parsed = lines.slice(0, 4);
       }
-    }
-  }
-
-  // 4. Grounded heuristic fallback if LLM output was empty or invalid
-  if (parsed.length < 2) {
-    const conceptMatches = Array.from(systemPrompt.matchAll(/[“"「]([^”"」]{2,15})[”"」]/g)).map((m) => m[1]);
-    const boldMatches = Array.from(systemPrompt.matchAll(/\*\*([^*]{2,15})\*\*/g)).map((m) => m[1]);
-    const combined = Array.from(new Set([...conceptMatches, ...boldMatches])).filter(
-      (c) => !c.includes('http') && !c.includes('www') && c.length >= 2 && c.length <= 15
-    );
-
-    if (combined.length >= 3) {
-      parsed = [
-        `如何理解原著中提出的“${combined[0]}”？它在实际场景中如何应用？`,
-        `原著中关于“${combined[1]}”的核心逻辑是什么？如何避免常见误区？`,
-        `如何将“${combined[2]}”与实际决策或行动相结合？`,
-      ];
-    } else if (combined.length >= 1) {
-      parsed = [
-        `如何理解原著中提出的“${combined[0]}”？它在实际场景中如何应用？`,
-        `结合《${cleanTitle}》的核心论述，遇到重大抉择时该如何破局？`,
-        `原著中最具实操价值的思考工具或原则是什么？`,
-      ];
-    } else {
-      parsed = [
-        `结合《${cleanTitle}》的导师设定，当前领域最核心的底层逻辑是什么？`,
-        `原著中最值得反复咀嚼的思考模型或方法论是什么？`,
-        `如果我想在实际工作与生活中实践本书精髓，第一步该怎么做？`,
-      ];
     }
   }
 

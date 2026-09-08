@@ -69,7 +69,6 @@ export interface ChatMessage {
   thinkingTime?: number;
   isStreaming?: boolean;
   modelUsed?: string;
-  isFallback?: boolean;
   recommendedQuestions?: string[];
 }
 
@@ -88,10 +87,7 @@ export interface ChatSession {
 export interface LLMConfig {
   apiBaseUrl?: string;
   apiKey?: string;
-  primaryProvider: 'deepseek' | 'custom';
   primaryModel: string;
-  fallbackProvider?: 'deepseek' | 'custom';
-  fallbackModel?: string;
   timeoutSec: number;
   maxTokens?: number;
   deepseekApiKey: string;

@@ -3,14 +3,12 @@ import bcrypt from 'bcryptjs';
 import fs from 'fs';
 import path from 'path';
 import rateLimit from 'express-rate-limit';
-import { GoogleGenAI } from '@google/genai';
 import { db, getTodayString } from '../db.js';
 import { DATA_DIR, ADMIN_PHONE, ADMIN_PASSWORD } from '../config.js';
 import { metrics } from '../services/metrics.js';
 import { requireAdmin } from '../middleware/admin.js';
 import { sanitizeUser, signToken, buildAdminProfile } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
-import { resolveGeminiModelName } from '../services/llm/gemini.js';
 import { newUserId } from '../services/ids.js';
 import { UserProfile, MembershipTier, cleanBookTitle } from '../../src/types.js';
 
@@ -432,11 +430,10 @@ export function registerAdminRoutes(app: Express): void {
     const cleanKey = cleanApiKey(apiKey || process.env.DEEPSEEK_API_KEY || '');
     const model = (primaryModel || 'deepseek-chat').trim();
     const baseUrl = (apiBaseUrl || 'https://api.deepseek.com/v1').trim();
-    const geminiKey = process.env.GEMINI_API_KEY || (cleanKey.startsWith('AIza') ? cleanKey : '');
 
     const hasValidKey = !isInvalidOrPlaceholderKey(cleanKey);
 
-    if (!hasValidKey && !geminiKey) {
+    if (!hasValidKey) {
       return res.json({
         success: false,
         error: '未提供有效 API 密钥 (API Key 为空或为示例格式)',
@@ -445,63 +442,7 @@ export function registerAdminRoutes(app: Express): void {
 
     const startTime = Date.now();
 
-    // 1. If Gemini model or no custom key provided (using server-side Gemini service)
-    if (model.toLowerCase().includes('gemini') || (!hasValidKey && geminiKey)) {
-      try {
-        const ai = new GoogleGenAI({
-          apiKey: geminiKey,
-          httpOptions: {
-            headers: {
-              'User-Agent': 'aistudio-build',
-            },
-          },
-        });
-        const targetModel = resolveGeminiModelName(model);
-        const testModels = Array.from(new Set([targetModel, 'gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash']));
-        let response: any = null;
-        let usedModelName = targetModel;
-        let lastErr: any = null;
-
-        for (const tm of testModels) {
-          let timer: NodeJS.Timeout | null = null;
-          try {
-            const generatePromise = ai.models.generateContent({
-              model: tm,
-              contents: '请回复“连接成功”四个字。',
-            });
-            const timeoutPromise = new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error('请求超时 (8秒)')), 8000);
-            });
-            response = await Promise.race([generatePromise, timeoutPromise]);
-            if (timer) clearTimeout(timer);
-            usedModelName = tm;
-            if (response?.text) break;
-          } catch (e: any) {
-            if (timer) clearTimeout(timer);
-            lastErr = e;
-          }
-        }
-
-        if (!response) {
-          throw lastErr || new Error('模型服务未正常响应');
-        }
-
-        const latency = Date.now() - startTime;
-        return res.json({
-          success: true,
-          latencyMs: latency,
-          model: `${usedModelName} (平台内置高可用服务)`,
-          reply: response?.text || '连接成功',
-        });
-      } catch (err: any) {
-        return res.json({
-          success: false,
-          error: err.message || '大模型服务连接失败',
-        });
-      }
-    }
-
-    // 2. Standard OpenAI-compatible model test
+    // OpenAI 兼容接口连通性测试（DeepSeek / 阿里 DashScope 二选一）
     try {
       const targetUrl = resolveOpenAIUrl(baseUrl);
       const isReasoner =

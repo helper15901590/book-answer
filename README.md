@@ -15,6 +15,7 @@ View your app in AI Studio: https://ai.studio/apps/749f14d0-a51d-4caa-9dee-e4e01
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Copy `.env.example` to `.env.local`, then set `JWT_SECRET` and the LLM config
+   (OpenAI-compatible: DeepSeek or Aliyun DashScope — see comments in `.env.example`)
 3. Run the app:
    `npm run dev`

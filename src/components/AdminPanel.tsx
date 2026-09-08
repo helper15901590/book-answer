@@ -1998,7 +1998,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         placeholder="https://api.deepseek.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1"
                         className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
                       />
-                      <p className="text-[11px] text-slate-400 mt-1">标准 OpenAI 兼容模式的 API 基础 Endpoint 地址</p>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        OpenAI 兼容接口，二选一：DeepSeek（https://api.deepseek.com/v1，模型 deepseek-chat）或阿里云百炼
+                        DashScope（https://dashscope.aliyuncs.com/compatible-mode/v1，模型 qwen-max / qwen-plus 等）
+                      </p>
                     </div>
 
                     <div>
@@ -2021,15 +2024,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         type="text"
                         value={llmConfig.primaryModel || 'deepseek-chat'}
                         onChange={(e) => setLlmConfig({ ...llmConfig, primaryModel: e.target.value })}
-                        className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-slate-700 font-medium text-xs mb-1.5">备用推理模型 (Fallback Model)</label>
-                      <input
-                        type="text"
-                        value={llmConfig.fallbackModel || 'qwen-max'}
-                        onChange={(e) => setLlmConfig({ ...llmConfig, fallbackModel: e.target.value })}
                         className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
                       />
                     </div>

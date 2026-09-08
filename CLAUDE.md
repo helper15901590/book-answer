@@ -11,7 +11,7 @@
 - 后端：Express 4（模块化 `server/`：index/config/db + middleware/ + routes/ + services/），开发态内嵌 Vite middleware
 - 数据库：better-sqlite3（WAL、write-through），持久化到 `data/commercial.sqlite`（`DATA_DIR` 可配）
 - 认证：JWT（jsonwebtoken），手机号+6位数字密码（bcryptjs 哈希）；角色 guest/member/admin
-- LLM：主路 DeepSeek/OpenAI 兼容接口 → 备用 Gemini（@google/genai）→ 兜底离线模板生成
+- LLM：OpenAI 兼容接口单路径（DeepSeek / 阿里云百炼 DashScope 二选一，后台或环境变量配置）；未配置返回 503、上游失败返回明确错误（Gemini 备用与离线模板兜底已移除，不产出伪造回复）
 
 ## 常用命令
 - 开发：`npm run dev`（tsx server/index.ts，含 HMR）
@@ -21,7 +21,7 @@
 - 测试：无测试基础设施
 
 ## 环境变量（.env.local 或 .env，参考 .env.example）
-`JWT_SECRET`（必填 ≥16 字符，无默认值，缺失拒绝启动）、`ADMIN_PHONE`/`ADMIN_PASSWORD`（管理后台登录凭证，账号不入库）、`DATA_DIR`、`TRUST_PROXY`、`HOST_PORT`（仅 compose 插值）、`GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`
+`JWT_SECRET`（必填 ≥16 字符，无默认值，缺失拒绝启动）、`ADMIN_PHONE`/`ADMIN_PASSWORD`（管理后台登录凭证，账号不入库）、`DATA_DIR`、`TRUST_PROXY`、`HOST_PORT`（仅 compose 插值）、`DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL`（OpenAI 兼容 LLM 配置，DeepSeek 或阿里 DashScope 二选一，见 .env.example）
 
 ## 项目结构
 | 路径 | 职责 |
@@ -31,7 +31,7 @@
 | `server/db.ts` | `CommercialSQLDatabase` 类（better-sqlite3）：建表、迁移、种子数据、write-through |
 | `server/middleware/` | `auth.ts`（JWT 解析/sanitizeUser）、`admin.ts`（requireAdmin） |
 | `server/routes/` | auth / skills / chat(SSE) / admin / config 路由模块（`registerXxxRoutes(app)`） |
-| `server/services/` | adminSeed / quota / metrics / llm（主路 OpenAI 兼容 → Gemini → 离线兜底） |
+| `server/services/` | adminSeed / quota / metrics / llm（OpenAI 兼容调用 sanitize / 推荐追问生成 questions，无降级链） |
 | `src/main.tsx` | React 入口（主前端，无任何后台入口痕迹） |
 | `src/admin-main.tsx` + `admin.html` | 管理后台独立多页入口（AdminGate 验证后渲染 AdminPanel） |
 | `src/App.tsx` | 根组件：用户/技能/LLM 配置状态 |
