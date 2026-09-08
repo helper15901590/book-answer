@@ -28,6 +28,7 @@ SSE_OUT=$(curl -sN --max-time 30 -X POST "$BASE/api/chat/stream" -H 'Content-Typ
   -d "{\"sessionId\":\"$SSE_SESS\",\"skillId\":\"skill-santi\",\"messageText\":\"你好\"}")
 check "SSE 流式端点返回 data: 帧" "1" "$(echo "$SSE_OUT" | grep -c '^data:' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
 
+# 限流注意：/api/auth/login 限 10 次/分/IP，本脚本每轮共 6 次登录请求；1 分钟内连续重跑可能触发 429
 if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_CODE:-}" ]; then
   TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
     -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
@@ -49,6 +50,16 @@ if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_CODE:-}" ]; then
       -d "{\"userId\":\"$NEW_UID\",\"tier\":\"monthly_member\"}")
     check "手动升级会员成功" "1" "$(echo "$UPGRADE" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
     check "升级后 tier 生效" "1" "$(echo "$UPGRADE" | grep -c monthly_member | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+    # 建号 → 登录闭环回归（新建账号必须能立即登录；改密后新密码生效、旧密码被拒）
+    check "新建 userId 为10位" "10" "${#NEW_UID}"
+    check "新建用户可登录" "1" "$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
+      -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+    curl -s -o /dev/null -X POST "$BASE/api/admin/users/update" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+      -d "{\"userId\":\"$NEW_UID\",\"code\":\"654321\"}"
+    check "改密后新密码可登录" "1" "$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
+      -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"654321\"}" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
+    check "改密后旧密码被拒" "400" "$(code -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
+      -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}")"
   else
     check "管理员登录成功" "1" "0"
   fi
