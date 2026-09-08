@@ -202,7 +202,7 @@ export class CommercialSQLDatabase {
   public getUserById(id: string): UserProfile | undefined {
     if (!this.db) return undefined;
     const row = this.db.prepare(`SELECT * FROM users WHERE id = ? OR union_id = ?`).get(id, id) as any;
-    return row ? this.mapUserRowToProfile(row) : undefined;
+    return row ? this.refreshUserDailyQuota(this.mapUserRowToProfile(row)) : undefined;
   }
 
   public getUserByPhone(phone: string): UserProfile | undefined {
@@ -218,7 +218,7 @@ export class CommercialSQLDatabase {
         membership_expires_at, daily_max_chats, daily_used_count, guest_used_count, is_admin, last_active_date, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
-      user.id, user.unionId, user.phone ?? null, user.password ?? null, user.nickname, user.avatar ?? null,
+      user.id, user.unionId ?? null, user.phone ?? null, user.password ?? null, user.nickname, user.avatar ?? null,
       user.role, user.membershipTier ?? 'free_member', user.membershipExpiresAt ?? null,
       user.dailyMaxChats ?? 10, user.dailyUsedCount ?? 0, user.guestUsedCount ?? 0,
       user.isAdmin || user.role === 'admin' ? 1 : 0, user.lastActiveDate ?? null, user.createdAt ?? null

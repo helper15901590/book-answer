@@ -88,17 +88,4 @@ export function registerAuthRoutes(app: Express): void {
   app.post('/api/auth/logout', (req, res) => {
     res.json({ success: true, user: sanitizeUser(GUEST_USER) });
   });
-
-  app.post('/api/auth/update', (req: AuthRequest, res) => {
-    const targetUserId = req.user?.id || req.body.userId;
-    if (!targetUserId) {
-      return res.status(401).json({ error: '请先登录' });
-    }
-    const existing = db.getUserById(targetUserId);
-    if (!existing) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    const updated = db.saveUser({ ...existing, ...req.body.updates });
-    res.json({ success: true, user: sanitizeUser(updated) });
-  });
 }

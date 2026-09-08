@@ -1,4 +1,5 @@
-import { Express } from 'express';
+import { Express, Request } from 'express';
+import rateLimit from 'express-rate-limit';
 import { db } from '../db.js';
 import { AuthRequest, sanitizeUser } from '../middleware/auth.js';
 import { metrics } from '../services/metrics.js';
@@ -8,6 +9,14 @@ import { callGeminiResponse } from '../services/llm/gemini.js';
 import { generateDeepBookDistillation } from '../services/llm/offline.js';
 import { GUEST_USER } from '../../src/data/initialData.js';
 import { ChatMessage, cleanBookTitle } from '../../src/types.js';
+
+// 未认证聊天限流：匿名 LLM 调用 10 次/分/IP（已认证用户走配额体系，跳过）
+const chatLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 10,
+  skip: (req: Request) => !!(req as AuthRequest).user,
+  message: { error: '请求过于频繁，请稍后再试' },
+});
 
 export function registerChatRoutes(app: Express): void {
   // 会话管理 API（按用户隔离）
@@ -60,8 +69,8 @@ export function registerChatRoutes(app: Express): void {
     res.json({ success: deleted });
   });
 
-  // SSE（Server-Sent Events）流式对话端点
-  app.post('/api/chat/stream', async (req: AuthRequest, res) => {
+  // SSE（Server-Sent Events）流式对话端点（未认证请求限流 10 次/分/IP）
+  app.post('/api/chat/stream', chatLimiter, async (req: AuthRequest, res) => {
     const { sessionId, skillId, messageText, userId } = req.body;
     if (!sessionId || !messageText) {
       return res.status(400).json({ error: '缺少必要的 sessionId 或 messageText 参数' });
@@ -307,8 +316,8 @@ export function registerChatRoutes(app: Express): void {
     res.end();
   });
 
-  // Backward-compatible POST /api/chat/send
-  app.post('/api/chat/send', async (req: AuthRequest, res) => {
+  // Backward-compatible POST /api/chat/send（未认证请求限流 10 次/分/IP）
+  app.post('/api/chat/send', chatLimiter, async (req: AuthRequest, res) => {
     const { sessionId, skillId, messageText, userId } = req.body;
     if (!sessionId || !messageText) {
       return res.status(400).json({ error: '缺少必要的 sessionId 或 messageText 参数' });

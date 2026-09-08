@@ -18,7 +18,15 @@ check "游客清空用户被拒" "403" "$(code -X POST "$BASE/api/admin/users/cl
 check "注册端点已移除" "404" "$(code -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' -d '{}')"
 check "simulate-pay 已移除" "404" "$(code -X POST "$BASE/api/payment/simulate-pay")"
 check "webhook 已移除" "404" "$(code -X POST "$BASE/api/payment/webhook")"
+check "create-membership-order 已移除" "404" "$(code -X POST "$BASE/api/payment/create-membership-order" -H 'Content-Type: application/json' -d '{}')"
 check "未知手机号登录被拒" "404" "$(code -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d '{"phone":"19999999999","code":"123456"}')"
+
+# SSE 流式端点（未认证游客载荷，离线兜底也应输出 data: 帧）
+# 限流注意：匿名聊天限流 10 次/分/IP，本脚本匿名聊天请求仅此 1 次（管理员聊天链路带 token 被限流跳过），1 分钟内重跑无需等待
+SSE_SESS="smoke-sse-$(date +%s)"
+SSE_OUT=$(curl -sN --max-time 30 -X POST "$BASE/api/chat/stream" -H 'Content-Type: application/json' \
+  -d "{\"sessionId\":\"$SSE_SESS\",\"skillId\":\"skill-santi\",\"messageText\":\"你好\"}")
+check "SSE 流式端点返回 data: 帧" "1" "$(echo "$SSE_OUT" | grep -c '^data:' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
 
 if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_CODE:-}" ]; then
   TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
