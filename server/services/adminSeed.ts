@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { db } from '../db.js';
 import { ADMIN_PHONE, ADMIN_PASSWORD } from '../config.js';
 import { isAdminUser } from '../middleware/admin.js';
+import { newUserId } from './ids.js';
 
 // 幂等确保存在管理员账号：优先环境变量，缺省生成随机 6 位数字密码并打印一次
 export function ensureAdminSeed(): void {
@@ -27,7 +28,7 @@ export function ensureAdminSeed(): void {
   }
 
   db.saveUser({
-    id: 'usr_' + crypto.randomUUID(),
+    id: newUserId(),
     unionId: 'union_admin_' + crypto.randomUUID(),
     phone,
     password: bcrypt.hashSync(password, 10),

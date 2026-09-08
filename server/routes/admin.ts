@@ -10,6 +10,7 @@ import { requireAdmin } from '../middleware/admin.js';
 import { sanitizeUser } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
 import { resolveGeminiModelName } from '../services/llm/gemini.js';
+import { newUserId } from '../services/ids.js';
 import { UserProfile, MembershipTier, cleanBookTitle } from '../../src/types.js';
 
 export function registerAdminRoutes(app: Express): void {
@@ -122,6 +123,9 @@ export function registerAdminRoutes(app: Express): void {
     if (!cleanPhone) {
       return res.status(400).json({ error: '手机号码不能为空' });
     }
+    if (!/^\d{11}$/.test(cleanPhone)) {
+      return res.status(400).json({ error: '手机号码必须为11位阿拉伯数字' });
+    }
 
     const cleanCode = (code || password || '').trim();
     if (!cleanCode) {
@@ -135,7 +139,7 @@ export function registerAdminRoutes(app: Express): void {
 
     const suffix = cleanPhone.length >= 4 ? cleanPhone.slice(-4) : cleanPhone.padStart(4, '0');
     const autoNickname = suffix;
-    const userId = 'usr_' + crypto.randomUUID();
+    const userId = newUserId();
     const unionId = 'union_' + crypto.randomUUID();
     const assignedTier: MembershipTier = membershipTier || 'free_member';
     
@@ -202,6 +206,10 @@ export function registerAdminRoutes(app: Express): void {
     if (phone !== undefined) {
       const cleanPhone = phone.trim();
       if (cleanPhone) {
+        // 服务端兜底校验：拒绝掩码占位（138****xxxx）等非法手机号入库
+        if (!/^\d{11}$/.test(cleanPhone)) {
+          return res.status(400).json({ error: '手机号码必须为11位阿拉伯数字' });
+        }
         const existing = db.getUserByPhone(cleanPhone);
         if (existing && existing.id !== user.id) {
           return res.status(400).json({ error: '该手机号已存在关联用户' });
@@ -274,7 +282,10 @@ export function registerAdminRoutes(app: Express): void {
       return res.status(400).json({ error: 'Missing userId or tier' });
     }
     const updated = db.upgradeUserMembership(userId, tier, days || 30);
-    res.json({ success: true, user: updated ? sanitizeUser(updated) : undefined });
+    if (!updated) {
+      return res.status(404).json({ error: '用户不存在' });
+    }
+    res.json({ success: true, user: sanitizeUser(updated) });
   });
 
   app.post('/api/admin/users/:userId/membership', requireAdmin, (req, res) => {
