@@ -15,6 +15,7 @@ import {
 import { GUEST_USER } from '../data/initialData';
 import { SkillCard } from './SkillCard';
 import { BookDetailModal } from './BookDetailModal';
+import { MembershipModal } from './MembershipModal';
 import { MarkdownMessage } from './MarkdownMessage';
 import {
   Search,
@@ -33,6 +34,7 @@ import {
   Brain,
   Clock,
   User,
+  Crown,
 } from 'lucide-react';
 
 interface AiStudioWorkspaceProps {
@@ -77,6 +79,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isMembershipModalOpen, setIsMembershipModalOpen] = useState(false);
   const [deletingSession, setDeletingSession] = useState<ChatSession | null>(null);
   const [toastInfo, setToastInfo] = useState<{ message: string; type?: 'info' | 'warning' | 'success' } | null>(null);
 
@@ -950,13 +953,26 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         <span>登录 / 注册</span>
                       </button>
                     ) : (
-                      <button
-                        onClick={handleLogout}
-                        className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200 flex items-center justify-center gap-1.5"
-                      >
-                        <LogOut className="w-3.5 h-3.5" />
-                        退出登录
-                      </button>
+                      <>
+                        {/* 会员订阅入口（开通功能暂未开放，窗口内按钮禁用） */}
+                        <button
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            setIsMembershipModalOpen(true);
+                          }}
+                          className="w-full py-2 bg-[#f4efe6] hover:bg-[#eae1d0] text-[#2c221e] border border-[#ded3be] rounded-xl text-xs font-bold text-center transition-all cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
+                        >
+                          <Crown className="w-3.5 h-3.5 text-[#8c6227]" />
+                          会员订阅
+                        </button>
+                        <button
+                          onClick={handleLogout}
+                          className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200 flex items-center justify-center gap-1.5"
+                        >
+                          <LogOut className="w-3.5 h-3.5" />
+                          退出登录
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -1497,6 +1513,15 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           handleSelectBookFromMarket(skill);
         }}
       />
+
+      {/* 会员订阅窗口（禁用态：仅浏览套餐，开通按钮置灰） */}
+      {isMembershipModalOpen && (
+        <MembershipModal
+          llmConfig={llmConfig}
+          currentTier={effectiveTier}
+          onClose={() => setIsMembershipModalOpen(false)}
+        />
+      )}
 
       {/* Screen-Center Quota Alert & Notification Card Modal */}
       {toastInfo && (
