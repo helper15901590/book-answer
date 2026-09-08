@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { UserProfile, Skill, LLMConfig } from '../types';
 import { DEFAULT_LLM_CONFIG } from '../data/initialData';
 import { AdminPanel } from './AdminPanel';
-import { authHeaders } from '../lib/apiFetch';
+import { authHeaders, authTokenKey } from '../lib/apiFetch';
 
 // 管理后台独立入口：先验证管理员身份，再渲染原封不动的 AdminPanel
 export const AdminGate: React.FC = () => {
@@ -46,7 +46,7 @@ export const AdminGate: React.FC = () => {
         setError('该账号非管理员，禁止访问后台');
         return;
       }
-      if (data.token) localStorage.setItem('auth_token', data.token);
+      if (data.token) localStorage.setItem(authTokenKey(), data.token);
       setAdmin(data.user);
     } catch {
       setError('网络请求异常，请稍后重试');

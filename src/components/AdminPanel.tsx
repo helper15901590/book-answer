@@ -353,7 +353,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         });
         fetchAdminData();
       } else {
-        showToast(data.error || '创建用户失败');
+        showToast(data.message || data.error || '创建用户失败');
       }
     } catch (err) {
       console.error('Error creating user:', err);
@@ -382,12 +382,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
     try {
+      const cleanPhone = editUserForm.phone.trim();
       const res = await apiFetch('/api/admin/users/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: editingUser.id,
-          phone: editUserForm.phone.trim(),
+          // 展示用占位手机号（如 138****xxxx）不回传，避免把占位符写入数据库
+          ...(/^\d{11}$/.test(cleanPhone) ? { phone: cleanPhone } : {}),
           code: cleanCode,
           password: cleanCode,
           membershipTier: editUserForm.membershipTier,
@@ -402,7 +404,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setEditingUser(null);
         fetchAdminData();
       } else {
-        showToast(data.error || '更新失败');
+        showToast(data.message || data.error || '更新失败');
       }
     } catch {
       showToast('更新异常');
@@ -517,9 +519,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!content || !content.trim()) return;
     setIsGeneratingQuestions(true);
     try {
-      const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
+      // apiFetch 会按当前页面自动注入正确的 Authorization（后台页用 admin_auth_token）
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
 
       const res = await apiFetch('/api/skills/generate-questions', {
         method: 'POST',
