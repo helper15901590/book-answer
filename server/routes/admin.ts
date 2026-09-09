@@ -396,6 +396,7 @@ export function registerAdminRoutes(app: Express): void {
       sampleQuestions: Array.isArray(skill.sampleQuestions) ? skill.sampleQuestions : [],
       chatCount: Number(skill.chatCount) || 0,
       searchCount: Number(skill.searchCount) || 0,
+      skillType: (skill.skillType === 'mentor' ? 'mentor' : 'book') as 'book' | 'mentor',
     };
 
     const saved = db.saveSkill(skillData);

@@ -77,7 +77,11 @@ export function registerChatRoutes(app: Express): void {
         {
           id: 'msg-' + Date.now(),
           role: 'assistant' as const,
-          content: `你好！我是《${cleanBookTitle(skill.title)}》作者【${skill.author}】的AI思想蒸馏体。
+          content: (skill.skillType === 'mentor')
+            ? `你好！我是【${skill.author}】AI思想导师。
+我已将其核心思想、决策智慧（${(skill.tags || []).join('、')}）融会贯通。
+你可以提出你当前在商业、投资、工作或生活中的具体困惑，我将以导师思维为你提供深度答疑与决策剖析。`
+            : `你好！我是《${cleanBookTitle(skill.title)}》作者【${skill.author}】的AI思想蒸馏体。
 我已将本书的核心理论、决策模型（${(skill.tags || []).join('、')}）融会贯通。
 你可以提出你当前在商业、投资、工作或生活中的具体困惑，我将以原著思维模型为你提供深度答疑与决策剖析。`,
           timestamp: new Date().toISOString(),

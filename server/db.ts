@@ -10,7 +10,7 @@ import {
   MembershipTier,
   getEffectiveMembershipTier,
 } from '../src/types.js';
-import { INITIAL_SKILLS, DEFAULT_LLM_CONFIG } from '../src/data/initialData.js';
+import { INITIAL_SKILLS, INITIAL_MENTORS, DEFAULT_LLM_CONFIG } from '../src/data/initialData.js';
 import { DATA_DIR } from './config.js';
 
 const SQLITE_DB_PATH = path.join(DATA_DIR, 'commercial.sqlite');
@@ -70,6 +70,7 @@ export class CommercialSQLDatabase {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     this.createTables();
+    this.migrateSchema();
     this.createIndices();
     this.seedInitialData();
     console.log('✅ Commercial SQLite Engine (better-sqlite3, write-through WAL) at:', SQLITE_DB_PATH);
@@ -158,6 +159,20 @@ export class CommercialSQLDatabase {
     `);
   }
 
+  /** 增量迁移：已有数据库补建 skill_type 列（幂等，已存在则跳过） */
+  private migrateSchema(): void {
+    if (!this.db) return;
+    try {
+      const cols = this.db.pragma('table_info(skills)') as { name: string }[];
+      if (!cols.some((c) => c.name === 'skill_type')) {
+        this.db.exec(`ALTER TABLE skills ADD COLUMN skill_type TEXT DEFAULT 'book'`);
+        console.log('✅ 迁移：skills 表新增 skill_type 列（默认 book）');
+      }
+    } catch (err) {
+      console.warn('Schema migration notice:', err);
+    }
+  }
+
   private createIndices(): void {
     if (!this.db) return;
     try {
@@ -188,8 +203,8 @@ export class CommercialSQLDatabase {
       const existing = this.db.prepare(`SELECT id FROM skills WHERE id = ?`).get(s.id);
       if (!existing) {
         this.db.prepare(
-          `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
           s.id,
           s.title,
@@ -205,7 +220,36 @@ export class CommercialSQLDatabase {
           s.preferredModel || 'deepseek-chat',
           JSON.stringify(s.sampleQuestions || []),
           0,
-          0
+          0,
+          'book'
+        );
+      }
+    }
+
+    // Seed/sync Mentors（导师人物，skillType=mentor）
+    for (const m of INITIAL_MENTORS) {
+      const existing = this.db.prepare(`SELECT id FROM skills WHERE id = ?`).get(m.id);
+      if (!existing) {
+        this.db.prepare(
+          `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          m.id,
+          m.title,
+          m.author,
+          m.description || '',
+          m.category,
+          m.coverUrl,
+          JSON.stringify(m.tags || []),
+          m.systemPrompt || '',
+          m.catalogContent || '',
+          m.bookContent || '',
+          m.tokenCount || 12000,
+          m.preferredModel || 'deepseek-chat',
+          JSON.stringify(m.sampleQuestions || []),
+          0,
+          0,
+          'mentor'
         );
       }
     }
@@ -429,13 +473,14 @@ export class CommercialSQLDatabase {
       sampleQuestions: typeof obj.sample_questions === 'string' ? JSON.parse(obj.sample_questions || '[]') : obj.sample_questions,
       chatCount: obj.chat_count,
       searchCount: obj.search_count,
+      skillType: obj.skill_type === 'mentor' ? 'mentor' : 'book',
     };
   }
 
   public getSkills(): Skill[] {
-    if (!this.db) return INITIAL_SKILLS;
+    if (!this.db) return [...INITIAL_SKILLS, ...INITIAL_MENTORS];
     const rows = this.db.prepare(`SELECT * FROM skills ORDER BY search_count DESC, id ASC`).all() as any[];
-    if (rows.length === 0) return INITIAL_SKILLS;
+    if (rows.length === 0) return [...INITIAL_SKILLS, ...INITIAL_MENTORS];
 
     return rows.map((obj) => this.mapSkillRow(obj));
   }
@@ -457,8 +502,8 @@ export class CommercialSQLDatabase {
   public saveSkill(skill: Skill): Skill {
     if (!this.db) return skill;
     this.db.prepare(
-      `INSERT OR REPLACE INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       skill.id,
       skill.title,
@@ -474,7 +519,8 @@ export class CommercialSQLDatabase {
       skill.preferredModel || 'deepseek-chat',
       JSON.stringify(skill.sampleQuestions || []),
       skill.chatCount || 0,
-      skill.searchCount || 0
+      skill.searchCount || 0,
+      skill.skillType || 'book'
     );
     return skill;
   }

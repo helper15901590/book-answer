@@ -42,6 +42,8 @@ export interface UserProfile {
   token?: string;
 }
 
+export type SkillType = 'book' | 'mentor';
+
 export interface Skill {
   id: string;
   title: string;
@@ -59,6 +61,8 @@ export interface Skill {
   searchCount?: number;
   hotScore?: number;
   sampleQuestions?: string[];
+  /** 技能类型：book（书籍蒸馏）或 mentor（导师人物），缺失视为 book */
+  skillType?: SkillType;
 }
 
 export interface ChatMessage {

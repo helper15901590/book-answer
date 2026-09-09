@@ -218,6 +218,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Search Query States
   const [skillSearchQuery, setSkillSearchQuery] = useState('');
+  const [skillTypeFilter, setSkillTypeFilter] = useState<'all' | 'book' | 'mentor'>('all');
   const [userSearchQuery, setUserSearchQuery] = useState('');
 
   // Action Dropdown State
@@ -597,7 +598,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleSaveSkill = async () => {
     if (!editingSkill?.title?.trim() || !editingSkill?.author?.trim()) {
-      alert('请填写真实的书籍名称与作者');
+      alert(editingSkill?.skillType === 'mentor' ? '请填写导师姓名' : '请填写真实的书籍名称与作者');
       return;
     }
 
@@ -628,7 +629,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
       const data = await res.json();
       if (data.success) {
-        showToast('导师数据更新成功！');
+        showToast(editingSkill?.skillType === 'mentor' ? '导师数据更新成功！' : '书籍数据更新成功！');
         setIsSkillModalOpen(false);
         setEditingSkill(null);
         if (data.skill && setSkills) {
@@ -644,17 +645,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const handleDeleteSkill = (id: string, title: string) => {
+    const targetSkill = skills.find((s) => s.id === id);
+    const isMentor = targetSkill?.skillType === 'mentor';
     setConfirmModal({
       isOpen: true,
-      title: '确认下架并删除导师',
-      description: `确定要下架并删除《${formatBookTitle(title)}》原著导师吗？该操作不可撤销。`,
+      title: `确认下架并删除${isMentor ? '导师' : '书籍'}`,
+      description: `确定要下架并删除${isMentor ? `【${title}】导师` : `${formatBookTitle(title)}原著`}吗？该操作不可撤销。`,
       confirmText: '确认删除',
       onConfirm: async () => {
         try {
           const res = await apiFetch(`/api/admin/skills/${id}`, { method: 'DELETE' });
           const data = await res.json();
           if (data.success) {
-            showToast(`已成功下架《${formatBookTitle(title)}》`);
+            showToast(`已成功下架${isMentor ? `【${title}】` : formatBookTitle(title)}`);
             fetchAdminData();
           }
         } catch (e) {
@@ -1220,6 +1223,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           {/* TAB 1: SKILLS MANAGEMENT */}
           {activeTab === 'skills' && (() => {
               const filteredSkills = skills.filter((s) => {
+                if (skillTypeFilter !== 'all' && (s.skillType || 'book') !== skillTypeFilter) return false;
                 if (!skillSearchQuery.trim()) return true;
                 const q = skillSearchQuery.trim().toLowerCase();
                 return (
@@ -1262,6 +1266,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </button>
                       )}
                     </div>
+                    <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5 shrink-0">
+                      {([['all', '全部'], ['book', '书籍'], ['mentor', '导师']] as const).map(([val, label]) => (
+                        <button
+                          key={val}
+                          onClick={() => { setSkillTypeFilter(val); setSkillsPage(1); }}
+                          className={`px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
+                            skillTypeFilter === val
+                              ? 'bg-white text-slate-900 shadow-sm'
+                              : 'text-slate-500 hover:text-slate-700'
+                          }`}
+                        >
+                          {label}
+                          <span className="ml-1 text-[10px] text-slate-400">
+                            {val === 'all' ? skills.length : skills.filter((s) => (s.skillType || 'book') === val).length}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
                     <button
                       onClick={() => {
                         setEditingSkill({
@@ -1275,6 +1297,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           searchCount: 500,
                           systemPrompt: '你是一位深度理解原著的导师。',
                           bookContent: '',
+                          skillType: 'book',
                         });
                         setIsSkillModalOpen(true);
                       }}
@@ -1290,6 +1313,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <thead className="bg-slate-50/70 border-b border-slate-200/80 text-slate-500 font-medium">
                         <tr>
                           <th className="py-2.5 px-4 font-medium w-auto">书名 / 作者</th>
+                          <th className="py-2.5 px-4 font-medium w-24">类型</th>
                           <th className="py-2.5 px-4 font-medium w-40">分类标签</th>
                           <th className="py-2.5 px-4 font-medium w-28">热度指数</th>
                           <th className="py-2.5 px-4 font-medium text-right w-24">操作</th>
@@ -1298,8 +1322,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <tbody className="divide-y divide-slate-100 text-slate-800 bg-white">
                         {displayedSkills.length === 0 ? (
                           <tr>
-                            <td colSpan={4} className="py-12 text-center text-slate-400 text-xs font-normal">
-                              未找到匹配的图书导师
+                            <td colSpan={5} className="py-12 text-center text-slate-400 text-xs font-normal">
+                              未找到匹配的{skillTypeFilter === 'mentor' ? '导师' : skillTypeFilter === 'book' ? '书籍' : '图书导师'}
                             </td>
                           </tr>
                         ) : (
@@ -1310,6 +1334,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   <span className="font-medium text-slate-900 truncate">{s.title}</span>
                                   {s.author && <span className="text-[11px] text-slate-400 shrink-0 font-normal">/ {s.author}</span>}
                                 </div>
+                              </td>
+                              <td className="py-3 px-4 whitespace-nowrap">
+                                {(s.skillType || 'book') === 'mentor' ? (
+                                  <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200/60 whitespace-nowrap shrink-0">导师</span>
+                                ) : (
+                                  <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-200/60 whitespace-nowrap shrink-0">书籍</span>
+                                )}
                               </td>
                               <td className="py-3 px-4 truncate">
                                 {(() => {
@@ -2315,7 +2346,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <div className="bg-white rounded-xl p-5 w-full max-w-lg shadow-xl border border-slate-200/90 space-y-4 max-h-[85vh] overflow-y-auto text-left">
             <div className="flex items-center justify-between border-b pb-3 border-slate-100">
               <h3 className="text-xs font-semibold text-slate-900">
-                {editingSkill.id ? '编辑图书导师' : '新增图书导师'}
+                {editingSkill.id ? '编辑' : '新增'}{editingSkill.skillType === 'mentor' ? '导师' : '图书'}
               </h3>
               <button
                 onClick={() => setIsSkillModalOpen(false)}
@@ -2327,16 +2358,47 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div className="space-y-3 text-xs">
               <div>
-                <label className="block font-medium text-slate-700 mb-1">书名</label>
+                <label className="block font-medium text-slate-700 mb-1">类型</label>
+                <select
+                  value={editingSkill.skillType || 'book'}
+                  onChange={(e) => {
+                    const next = e.target.value as 'book' | 'mentor';
+                    setEditingSkill((prev) => prev
+                      ? next === 'mentor'
+                        ? { ...prev, skillType: next, author: prev.title || '' }
+                        : { ...prev, skillType: next, author: '' }
+                      : prev
+                    );
+                  }}
+                  className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors cursor-pointer"
+                >
+                  <option value="book">书籍（原著蒸馏）</option>
+                  <option value="mentor">导师（人物思想）</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">
+                  {editingSkill.skillType === 'mentor' ? '作者姓名' : '书名'}
+                </label>
                 <input
                   type="text"
                   value={editingSkill.title || ''}
-                  onChange={(e) => setEditingSkill({ ...editingSkill, title: e.target.value })}
-                  placeholder="如：《黑天鹅》"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setEditingSkill((prev) => prev
+                      ? prev.skillType === 'mentor'
+                        ? { ...prev, title: val, author: val }
+                        : { ...prev, title: val }
+                      : prev
+                    );
+                  }}
+                  placeholder={editingSkill.skillType === 'mentor' ? '如：孔子、王阳明' : '如：《黑天鹅》'}
                   className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
                 />
               </div>
 
+              {editingSkill.skillType !== 'mentor' && (
               <div>
                 <label className="block font-medium text-slate-700 mb-1">作者</label>
                 <input
@@ -2347,6 +2409,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
                 />
               </div>
+              )}
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">

@@ -41,10 +41,15 @@ async function invokeGenerateQuestions(req: AuthRequest, res: Response, canWrite
 }
 
 export function registerSkillsRoutes(app: Express): void {
-  // 书籍市场（技能）API
+  // 书籍/导师市场（技能）API
   app.get('/api/skills', (req, res) => {
-    const { search, category } = req.query;
+    const { search, category, type } = req.query;
     let skills = db.getSkills();
+
+    // 按类型过滤：book（书籍）/ mentor（导师），不传则返回全部
+    if (type && typeof type === 'string' && (type === 'book' || type === 'mentor')) {
+      skills = skills.filter((s) => (s.skillType || 'book') === type);
+    }
 
     if (search && typeof search === 'string') {
       const q = search.toLowerCase().trim();

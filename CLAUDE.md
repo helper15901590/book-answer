@@ -15,7 +15,7 @@
 
 ## 常用命令
 - 开发：`npm run dev`（tsx server/index.ts，含 HMR）
-- 构建：`npm run build`（vite build 多页 index.html/admin.html → dist/ + esbuild 打包 server → dist-server/server.cjs，与前端静态目录分离防止源码外泄）
+- 构建：`npm run build`（vite build 多页 index.html/leonchan1590.html → dist/ + esbuild 打包 server → dist-server/server.cjs，与前端静态目录分离防止源码外泄）
 - 生产启动：`npm start`
 - 类型检查（lint）：`npm run lint`（tsc --noEmit）
 - 测试：无测试基础设施
@@ -33,7 +33,7 @@
 | `server/routes/` | auth / skills / chat(SSE) / admin / config 路由模块（`registerXxxRoutes(app)`） |
 | `server/services/` | adminSeed / quota / metrics / llm（OpenAI 兼容调用 sanitize / 推荐追问生成 questions，无降级链） |
 | `src/main.tsx` | React 入口（主前端，无任何后台入口痕迹） |
-| `src/admin-main.tsx` + `admin.html` | 管理后台独立多页入口（AdminGate 验证后渲染 AdminPanel） |
+| `src/admin-main.tsx` + `leonchan1590.html` | 管理后台独立多页入口（AdminGate 验证后渲染 AdminPanel） |
 | `src/App.tsx` | 根组件：用户/技能/LLM 配置状态 |
 | `src/components/AiStudioWorkspace.tsx` | 主界面（书籍市场 + 聊天工作区，AI Studio 风格） |
 | `src/components/AdminPanel.tsx` | 后台：用户/技能/订单/LLM 配置/标签/统计 |

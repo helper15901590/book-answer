@@ -68,14 +68,14 @@ async function startServer() {
 
   if (!IS_PROD) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
-    // 管理后台独立入口：dev 下重定向至多页构建的 admin.html
-    app.get('/admin', (_req, res) => res.redirect('/admin.html'));
+    // 管理后台独立入口：dev 下重定向至多页构建的 leonchan1590.html
+    app.get('/leonchan1590', (_req, res) => res.redirect('/leonchan1590.html'));
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    // 管理后台独立入口：prod 下直出 dist/admin.html
-    app.get('/admin', (_req, res) => res.sendFile(path.join(distPath, 'admin.html')));
+    // 管理后台独立入口：prod 下直出 dist/leonchan1590.html
+    app.get('/leonchan1590', (_req, res) => res.sendFile(path.join(distPath, 'leonchan1590.html')));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

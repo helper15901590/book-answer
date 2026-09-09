@@ -13,10 +13,10 @@ import {
   getMembershipTierLabel,
 } from '../types';
 import { loadGuestUser, rememberGuestCount } from '../lib/guestQuota';
-import { SkillCard } from './SkillCard';
 import { BookDetailModal } from './BookDetailModal';
 import { MembershipModal } from './MembershipModal';
 import { MarkdownMessage } from './MarkdownMessage';
+import MarketSection from './MarketSection';
 import {
   Search,
   Send,
@@ -65,8 +65,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
-  // Main view state: 'chat' (active dialogue) or 'market' (3-column book card grid)
-  const [mainView, setMainView] = useState<'chat' | 'market'>('market');
+  // Main view state: 'chat' (active dialogue), 'market' (book grid), or 'mentor' (mentor grid)
+  const [mainView, setMainView] = useState<'chat' | 'market' | 'mentor'>('market');
 
   // Chat Input Drafts per skill/book to prevent text leakage across different book pages
   const [inputDrafts, setInputDrafts] = useState<Record<string, string>>({});
@@ -155,6 +155,19 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   useEffect(() => {
     setVisibleCardCount(PAGE_SIZE);
   }, [selectedCategory, marketSearch]);
+
+  // --- 导师广场独立状态（与书籍广场对称） ---
+  const [mentorSelectedCategory, setMentorSelectedCategory] = useState<string>('全部');
+  const [mentorSearch, setMentorSearch] = useState('');
+  const [mentorVisibleCardCount, setMentorVisibleCardCount] = useState<number>(PAGE_SIZE);
+  const mentorTagsContainerRef = useRef<HTMLDivElement>(null);
+  const [mentorIsAllCategoriesModalOpen, setMentorIsAllCategoriesModalOpen] = useState(false);
+  const [mentorDetailSkill, setMentorDetailSkill] = useState<Skill | null>(null);
+  const [mentorMaxVisibleCategories, setMentorMaxVisibleCategories] = useState<number>(0);
+
+  useEffect(() => {
+    setMentorVisibleCardCount(PAGE_SIZE);
+  }, [mentorSelectedCategory, mentorSearch]);
 
   useEffect(() => {
     const handleCategoryUpdate = () => {
@@ -248,12 +261,18 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     if (mainView === 'market') {
       setMaxVisibleCategories(otherCategories.length);
     }
+    if (mainView === 'mentor') {
+      setMentorMaxVisibleCategories(otherCategories.length);
+    }
   }, [mainView, categories, catChangeVersion, otherCategories.length]);
 
   useEffect(() => {
     const handleResize = () => {
       if (mainView === 'market') {
         setMaxVisibleCategories(otherCategories.length);
+      }
+      if (mainView === 'mentor') {
+        setMentorMaxVisibleCategories(otherCategories.length);
       }
     };
     window.addEventListener('resize', handleResize);
@@ -267,6 +286,14 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       }
     }
   }, [mainView, maxVisibleCategories, categories]);
+
+  useLayoutEffect(() => {
+    if (mainView === 'mentor' && mentorTagsContainerRef.current) {
+      if (mentorTagsContainerRef.current.scrollHeight > 68 && mentorMaxVisibleCategories > 0) {
+        setMentorMaxVisibleCategories((prev) => Math.max(0, prev - 1));
+      }
+    }
+  }, [mainView, mentorMaxVisibleCategories, categories]);
 
   // Current active session & skill with strict synchronization
   const activeSession = React.useMemo(() => {
@@ -388,7 +415,9 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         {
           id: `init-msg-${Date.now()}`,
           role: 'assistant',
-          content: `你好！我是${formatBookTitle(currentSkillToUse.title)}的 AI 原著导师。\n\n已为你开启全新的对话页面。你可以随时提出你关注的问题。`,
+          content: currentSkillToUse.skillType === 'mentor'
+            ? `你好！我是【${currentSkillToUse.author}】AI思想导师。\n\n已为你开启全新的对话页面。你可以随时提出你关注的问题。`
+            : `你好！我是${formatBookTitle(currentSkillToUse.title)}的 AI 原著导师。\n\n已为你开启全新的对话页面。你可以随时提出你关注的问题。`,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           recommendedQuestions: initialQuestions,
         },
@@ -438,7 +467,9 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           {
             id: `init-msg-${Date.now()}`,
             role: 'assistant',
-            content: `你好！我是${formatBookTitle(skill.title)}的 AI 原著导师。\n\n你可以随时向我提出关于本书核心观点、逻辑框架的问题，或探讨如何在实际场景中应用。`,
+            content: skill.skillType === 'mentor'
+              ? `你好！我是【${skill.author}】AI思想导师。\n\n你可以随时向我提出关于其核心思想、决策智慧的问题，或探讨如何在实际场景中应用。`
+              : `你好！我是${formatBookTitle(skill.title)}的 AI 原著导师。\n\n你可以随时向我提出关于本书核心观点、逻辑框架的问题，或探讨如何在实际场景中应用。`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             recommendedQuestions: initialQuestions,
           },
@@ -852,9 +883,11 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     setTimeout(() => setCopiedMsgId(null), 2000);
   };
 
-  const sortedSkills = [...skills].sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0));
+  const sortedSkills = [...skills].filter((s) => (s.skillType || 'book') === 'book').sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0));
 
-  const marketFilteredSkills = skills
+  const bookSkills = skills.filter((s) => (s.skillType || 'book') === 'book');
+
+  const marketFilteredSkills = bookSkills
     .filter((skill) => {
       const mappedCategory = renamedCategoriesMap[skill.category] || skill.category;
       const matchesCategory =
@@ -878,6 +911,36 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   const displayedSkills = marketFilteredSkills.slice(0, visibleCardCount);
   const hasMoreCards = visibleCardCount < marketFilteredSkills.length;
   const remainingCount = marketFilteredSkills.length - visibleCardCount;
+
+  // --- 导师广场数据（仅 skillType=mentor） ---
+  const mentorSkills = skills.filter((s) => s.skillType === 'mentor');
+
+  const mentorSortedSkills = [...mentorSkills].sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0));
+
+  const mentorFilteredSkills = mentorSkills
+    .filter((skill) => {
+      const mappedCategory = renamedCategoriesMap[skill.category] || skill.category;
+      const matchesCategory =
+        mentorSelectedCategory === '全部' ||
+        mappedCategory === mentorSelectedCategory ||
+        skill.category === mentorSelectedCategory ||
+        skill.tags?.some((t) => (renamedCategoriesMap[t] || t) === mentorSelectedCategory);
+      const rawQ = mentorSearch.toLowerCase().trim();
+      const cleanQ = cleanBookTitle(rawQ).toLowerCase();
+      const matchesSearch =
+        !rawQ ||
+        skill.title.toLowerCase().includes(rawQ) ||
+        (cleanQ ? skill.title.toLowerCase().includes(cleanQ) : false) ||
+        (cleanQ ? cleanBookTitle(skill.title).toLowerCase().includes(cleanQ) : false) ||
+        (skill.author ? skill.author.toLowerCase().includes(rawQ) : false) ||
+        (cleanQ && skill.author ? skill.author.toLowerCase().includes(cleanQ) : false);
+      return matchesCategory && matchesSearch;
+    })
+    .sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0));
+
+  const mentorDisplayedSkills = mentorFilteredSkills.slice(0, mentorVisibleCardCount);
+  const mentorHasMoreCards = mentorVisibleCardCount < mentorFilteredSkills.length;
+  const mentorRemainingCount = mentorFilteredSkills.length - mentorVisibleCardCount;
 
   return (
     <div className="flex flex-col h-screen w-full bg-white text-gray-900 font-sans overflow-hidden select-none">
@@ -1041,6 +1104,22 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                 <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
               </div>
             </button>
+            <button
+              onClick={() => setMainView('mentor')}
+              className={`w-full py-3 px-3.5 rounded-xl font-semibold text-xs transition-all flex items-center justify-between cursor-pointer border ${
+                mainView === 'mentor'
+                  ? 'bg-[#f4efe6] text-[#2c221e] border-[#e2d8c3] font-bold shadow-2xs'
+                  : 'bg-white hover:bg-gray-100 text-gray-900 shadow-2xs border-gray-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Brain className="w-4 h-4 text-gray-700" />
+                <span>导师广场</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
+              </div>
+            </button>
           </div>
 
           {/* Middle Scrollable Section: Sessions List */}
@@ -1098,10 +1177,18 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                             isSelected ? 'text-[#2c221e] font-bold' : 'text-gray-800'
                           }`}
                         >
-                          <span className="truncate">{formatBookTitle(session.skillTitle)}</span>
+                          <span className="truncate">{(() => {
+                            const s = skills.find((sk) => sk.id === session.skillId);
+                            return s?.skillType === 'mentor' ? session.skillTitle : formatBookTitle(session.skillTitle);
+                          })()}</span>
+                          {(() => {
+                            const s = skills.find((sk) => sk.id === session.skillId);
+                            return s?.skillType !== 'mentor' ? (
                           <span className="text-gray-400 font-normal ml-1 shrink-0">
                             · {session.skillAuthor}
                           </span>
+                            ) : null;
+                          })()}
                           {sessionDate && (
                             <span className="text-[10px] text-gray-400 font-mono font-normal ml-auto shrink-0 pl-1.5 text-right">
                               {sessionDate}
@@ -1137,136 +1224,61 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         {/* ========================================================================= */}
         <main className="flex-1 flex flex-col h-full bg-white relative overflow-hidden">
           {mainView === 'market' ? (
-            /* ==================== MARKET VIEW GRID (3 COLUMNS) ==================== */
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50/50">
-              <div className="flex flex-col sm:flex-row sm:items-center gap-3 md:gap-4">
-                {/* Search Bar */}
-                <div className="relative w-full sm:w-72 md:w-80 shrink-0">
-                  <Search className="w-4 h-4 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={marketSearch}
-                    onChange={(e) => setMarketSearch(e.target.value)}
-                    placeholder="搜索书名或作者..."
-                    className="w-full pl-11 pr-10 py-2 bg-white text-sm text-gray-900 placeholder:text-gray-400 rounded-full outline-none focus:ring-2 focus:ring-gray-300 transition-all font-sans shadow-xs border border-gray-200"
-                  />
-                  {marketSearch && (
-                    <button
-                      onClick={() => setMarketSearch('')}
-                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 cursor-pointer"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-
-                {/* Category Tags */}
-                <div className="relative flex-1 min-w-0 flex items-center">
-                  <div
-                    ref={tagsContainerRef}
-                    className="max-h-[68px] overflow-hidden flex flex-wrap items-center gap-1.5 sm:gap-2 transition-all w-full"
-                  >
-                    {/* 全部 */}
-                    <button
-                      onClick={() => setSelectedCategory('全部')}
-                      className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap ${
-                        selectedCategory === '全部'
-                          ? 'bg-[#f4efe6] text-[#2c221e] font-bold shadow-2xs'
-                          : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100/80'
-                      }`}
-                    >
-                      #全部 ({skills.length})
-                    </button>
-
-                    {/* Category Tags */}
-                    {(() => {
-                      const visibleList = otherCategories.slice(0, maxVisibleCategories);
-                      const hasMore = maxVisibleCategories < otherCategories.length;
-
-                      return (
-                        <>
-                          {visibleList.map((cat) => (
-                            <button
-                              key={cat}
-                              onClick={() => setSelectedCategory(cat)}
-                              className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap ${
-                                selectedCategory === cat
-                                  ? 'bg-[#f4efe6] text-[#2c221e] font-bold shadow-2xs'
-                                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100/80'
-                              }`}
-                            >
-                              #{cat}
-                            </button>
-                          ))}
-
-                          {hasMore && (
-                            <button
-                              onClick={() => setIsAllCategoriesModalOpen(true)}
-                              className="px-2 py-1 rounded-lg text-xs font-bold text-gray-500 hover:text-gray-900 hover:bg-gray-100/80 cursor-pointer transition-colors whitespace-nowrap"
-                              title="点击查看全部标签"
-                            >
-                              ...
-                            </button>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-
-              {/* Grid Layout: Displays 3 items per row on lg screens */}
-              {marketFilteredSkills.length === 0 ? (
-                <div className="p-12 text-center text-sm text-gray-400">暂无卡片</div>
-              ) : (
-                <div className="space-y-6 pb-6">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {displayedSkills.map((skill) => {
-                      const globalRank = sortedSkills.findIndex((s) => s.id === skill.id) + 1;
-                      return (
-                        <SkillCard
-                          key={skill.id}
-                          skill={skill}
-                          rank={globalRank}
-                          user={user}
-                          selectedCategory={selectedCategory}
-                          renamedCategoriesMap={renamedCategoriesMap}
-                          deletedCategoriesSet={deletedCategoriesSet}
-                          validCategories={categories}
-                          onSelectSkill={handleSelectBookFromMarket}
-                          onViewDetail={(skill) => setDetailSkill(skill)}
-                        />
-                      );
-                    })}
-                  </div>
-
-                  {/* Load more / expand button when >= 20 cards */}
-                  {hasMoreCards && (
-                    <div className="flex flex-col items-center justify-center pt-3 pb-4">
-                      <button
-                        type="button"
-                        onClick={() => setVisibleCardCount((prev) => prev + PAGE_SIZE)}
-                        className="group px-6 py-2.5 rounded-full bg-white hover:bg-[#f4efe6] text-[#2c221e] border border-gray-300 hover:border-[#ded3be] text-xs font-semibold shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center gap-2 cursor-pointer active:scale-98"
-                      >
-                        <span>展开继续加载</span>
-                        <span className="text-gray-400 group-hover:text-gray-600 font-normal">
-                          (已展示 {displayedSkills.length}/{marketFilteredSkills.length} · 剩余 {remainingCount} 本)
-                        </span>
-                        <ChevronDown className="w-4 h-4 text-gray-500 group-hover:text-[#2c221e] group-hover:translate-y-0.5 transition-transform" />
-                      </button>
-                    </div>
-                  )}
-
-                  {!hasMoreCards && marketFilteredSkills.length > PAGE_SIZE && (
-                    <div className="text-center py-4 text-xs text-gray-400 flex items-center justify-center gap-2">
-                      <span className="w-8 h-px bg-gray-200"></span>
-                      <span>已展示全部 {marketFilteredSkills.length} 本原著书籍</span>
-                      <span className="w-8 h-px bg-gray-200"></span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            /* ==================== BOOK MARKET VIEW ==================== */
+            <MarketSection
+              search={marketSearch}
+              onSearchChange={setMarketSearch}
+              searchPlaceholder="搜索书名或作者..."
+              tagsContainerRef={tagsContainerRef}
+              selectedCategory={selectedCategory}
+              onCategoryChange={setSelectedCategory}
+              allSkillsCount={bookSkills.length}
+              otherCategories={otherCategories}
+              maxVisibleCategories={maxVisibleCategories}
+              onOpenAllCategories={() => setIsAllCategoriesModalOpen(true)}
+              filteredSkills={marketFilteredSkills}
+              displayedSkills={displayedSkills}
+              sortedSkills={sortedSkills}
+              user={user}
+              renamedCategoriesMap={renamedCategoriesMap}
+              deletedCategoriesSet={deletedCategoriesSet}
+              validCategories={categories}
+              hasMoreCards={hasMoreCards}
+              onLoadMore={() => setVisibleCardCount((prev) => prev + PAGE_SIZE)}
+              pageSize={PAGE_SIZE}
+              remainingCount={remainingCount}
+              onSelectSkill={handleSelectBookFromMarket}
+              onViewDetail={(skill) => setDetailSkill(skill)}
+              unitLabel="本原著书籍"
+            />
+          ) : mainView === 'mentor' ? (
+            /* ==================== MENTOR MARKET VIEW ==================== */
+            <MarketSection
+              search={mentorSearch}
+              onSearchChange={setMentorSearch}
+              searchPlaceholder="搜索导师名或领域..."
+              tagsContainerRef={mentorTagsContainerRef}
+              selectedCategory={mentorSelectedCategory}
+              onCategoryChange={setMentorSelectedCategory}
+              allSkillsCount={mentorSkills.length}
+              otherCategories={otherCategories}
+              maxVisibleCategories={mentorMaxVisibleCategories}
+              onOpenAllCategories={() => setMentorIsAllCategoriesModalOpen(true)}
+              filteredSkills={mentorFilteredSkills}
+              displayedSkills={mentorDisplayedSkills}
+              sortedSkills={mentorSortedSkills}
+              user={user}
+              renamedCategoriesMap={renamedCategoriesMap}
+              deletedCategoriesSet={deletedCategoriesSet}
+              validCategories={categories}
+              hasMoreCards={mentorHasMoreCards}
+              onLoadMore={() => setMentorVisibleCardCount((prev) => prev + PAGE_SIZE)}
+              pageSize={PAGE_SIZE}
+              remainingCount={mentorRemainingCount}
+              onSelectSkill={handleSelectBookFromMarket}
+              onViewDetail={(skill) => setMentorDetailSkill(skill)}
+              unitLabel="位导师"
+            />
           ) : (
             /* ==================== CHAT VIEW ==================== */
             <div className="flex-1 flex flex-col h-full overflow-hidden relative bg-white">
@@ -1529,7 +1541,51 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                     }`}
                   >
-                    #{cat === '全部' ? `全部 (${skills.length})` : cat}
+                    #{cat === '全部' ? `全部 (${bookSkills.length})` : cat}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 导师广场 All Categories Modal */}
+      {mentorIsAllCategoriesModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-gray-200 p-6 space-y-4 text-left relative animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <h3 className="text-base font-bold text-gray-900 font-serif flex items-center gap-2">
+                <span>全部导师标签</span>
+                <span className="text-xs font-sans font-normal text-gray-500">
+                  (共 {categories.length} 个标签)
+                </span>
+              </h3>
+              <button
+                onClick={() => setMentorIsAllCategoriesModalOpen(false)}
+                className="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 max-h-[55vh] overflow-y-auto p-1">
+              {categories.map((cat) => {
+                const isSelected = cat === mentorSelectedCategory;
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => {
+                      setMentorSelectedCategory(cat);
+                      setMentorIsAllCategoriesModalOpen(false);
+                    }}
+                    className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-[#f4efe6] text-[#2c221e] font-bold shadow-xs border border-[#e2d8c3]'
+                        : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                    }`}
+                  >
+                    #{cat === '全部' ? `全部 (${mentorSkills.length})` : cat}
                   </button>
                 );
               })}
@@ -1546,6 +1602,18 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         onClose={() => setDetailSkill(null)}
         onStartChat={(skill) => {
           setDetailSkill(null);
+          handleSelectBookFromMarket(skill);
+        }}
+      />
+
+      {/* 导师详情 Modal（复用 BookDetailModal） */}
+      <BookDetailModal
+        skill={mentorDetailSkill}
+        user={user}
+        isOpen={Boolean(mentorDetailSkill)}
+        onClose={() => setMentorDetailSkill(null)}
+        onStartChat={(skill) => {
+          setMentorDetailSkill(null);
           handleSelectBookFromMarket(skill);
         }}
       />

@@ -109,9 +109,11 @@ export const SkillCard: React.FC<SkillCardProps> = ({
               <h3 className="text-sm font-bold text-gray-900 group-hover:text-black transition-colors leading-snug truncate max-w-full">
                 {cleanBookTitle(skill.title)}
               </h3>
+              {skill.skillType !== 'mentor' && (
               <span className="text-[11px] text-gray-400 font-medium truncate shrink-0">
                 · {skill.author}
               </span>
+              )}
             </div>
 
             <p className="text-xs text-gray-600 line-clamp-3 leading-relaxed mt-1.5">
