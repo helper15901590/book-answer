@@ -16,7 +16,7 @@
 | Auth | jsonwebtoken + bcryptjs | | JWT 7 天有效，6 位数字密码 |
 | Rate Limit | express-rate-limit | 8 | 全局 300/min/IP，登录 10/min |
 | LLM | OpenAI 兼容接口 | | DeepSeek 或阿里 DashScope 二选一 |
-| Build (FE) | Vite | 6 | 多页构建：index.html + admin.html |
+| Build (FE) | Vite | 6 | 多页构建：index.html + leonchan1590.html |
 | Build (BE) | esbuild | 0.25 | → `dist-server/server.cjs` |
 | Runtime | tsx (dev) / Node (prod) | | `tsx server/index.ts` |
 
@@ -28,8 +28,8 @@
 ┌─────────────────────────────────────────────────────┐
 │                    Browser                          │
 │  ┌──────────────────┐   ┌─────────────────────────┐ │
-│  │  index.html      │   │  admin.html             │ │
-│  │  (用户主界面)     │   │  (管理后台 /admin)       │ │
+│  │  index.html      │   │  leonchan1590.html      │ │
+│  │  (用户主界面)     │   │  (后台 /leonchan1590)     │ │
 │  │  main.tsx → App  │   │  admin-main.tsx → Gate  │ │
 │  └────────┬─────────┘   └───────────┬─────────────┘ │
 └───────────┼─────────────────────────┼───────────────┘
@@ -64,7 +64,7 @@
 | Config | `server/config.ts` | 环境变量（dotenv）、JWT_SECRET fail-fast、DATA_DIR |
 | Database | `server/db.ts` | `CommercialSQLDatabase` 类：建表、索引、种子、CRUD |
 | User Frontend | `src/main.tsx` | React 入口 → `App.tsx` |
-| Admin Frontend | `src/admin-main.tsx` | AdminGate 验证 → AdminPanel |
+| Admin Frontend | `src/admin-main.tsx` + `leonchan1590.html` | `/leonchan1590` 独立入口，AdminGate 验证 → AdminPanel |
 | Shared Types | `src/types.ts` | 前后端共用的接口、枚举、工具函数 |
 | Seed Data | `src/data/initialData.ts` | 种子书籍（INITIAL_SKILLS）、游客用户、默认配置 |
 
