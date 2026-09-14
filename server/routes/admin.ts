@@ -383,7 +383,8 @@ export function registerAdminRoutes(app: Express): void {
     const input = req.body?.llmConfig;
     if (!input) return res.status(400).json({ error: 'Missing llmConfig data' });
     const mode = req.body?.apiKeyMode as 'keep' | 'replace' | 'clear' | undefined;
-    const submittedKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : undefined;
+    const rawSubmittedKey = typeof req.body?.apiKey === 'string' ? req.body.apiKey : input.apiKey;
+    const submittedKey = typeof rawSubmittedKey === 'string' ? rawSubmittedKey.trim() : undefined;
     const apiKey = mode === 'clear' ? null : mode === 'replace' || submittedKey ? submittedKey : undefined;
     if ((mode === 'replace' || submittedKey !== undefined) && !apiKey) return res.status(400).json({ error: 'INVALID_API_KEY', message: '请填写 API Key' });
     const saved = db.saveLLMConfig(input, apiKey);
