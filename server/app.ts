@@ -39,18 +39,6 @@ export async function createApp() {
     },
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   }));
-  app.use(rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false }));
-  app.use(express.json({ limit: '5mb' }));
-  app.use(cookieParser());
-  app.use(pinoHttp({ logger }));
-  app.use('/assets', express.static(path.join(DATA_DIR, 'assets'), { fallthrough: true, index: false }));
-  app.use((_req, _res, next) => {
-    metrics.totalRequestsServed++;
-    metrics.requestsLastMinute++;
-    next();
-  });
-  app.use(authMiddleware);
-
   app.get('/api/health', (_req, res) => {
     if (!db.ping()) return res.status(503).json({ status: 'unhealthy', timestamp: new Date().toISOString() });
     return res.json({
@@ -61,6 +49,18 @@ export async function createApp() {
       uptimeSeconds: Math.floor((Date.now() - metrics.startTime) / 1000),
     });
   });
+  app.use(rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false }));
+  app.use(express.json({ limit: '5mb' }));
+  app.use(cookieParser());
+  app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/api/health' } }));
+  app.use('/assets', express.static(path.join(DATA_DIR, 'assets'), { fallthrough: true, index: false }));
+  app.use((_req, _res, next) => {
+    metrics.totalRequestsServed++;
+    metrics.requestsLastMinute++;
+    next();
+  });
+  app.use(authMiddleware);
+
 
   app.use('/api', csrfProtection);
 
