@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { UserProfile, Skill, LLMConfig } from '../types';
 import { DEFAULT_LLM_CONFIG } from '../data/initialData';
 import { AdminPanel } from './AdminPanel';
+import { apiFetch } from '../lib/apiFetch';
 
 type LoginStep = 'credentials' | 'mfa_setup' | 'mfa_verify';
 
@@ -111,5 +112,5 @@ export const AdminGate: React.FC = () => {
     );
   }
 
-  return <AdminPanel llmConfig={llmConfig} setLlmConfig={setLlmConfig} skills={skills} setSkills={setSkills} user={admin} setUser={setAdmin} onClose={() => { window.location.href = '/'; }} />;
+  return <AdminPanel llmConfig={llmConfig} setLlmConfig={setLlmConfig} skills={skills} setSkills={setSkills} user={admin} setUser={setAdmin} onClose={async () => { try { await apiFetch('/api/admin/logout', { method: 'POST' }); } finally { window.location.href = '/'; } }} />;
 };
