@@ -4,7 +4,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     restart: unless-stopped
-    # 根目录 .env 注入全部运行时变量（JWT_SECRET、TRUST_PROXY 等，参考 .env.example）
+    # 根目录 .env 注入运行时变量（APP_ENCRYPTION_KEY、ADMIN_*、TRUST_PROXY 等）
     env_file: ../.env
     environment:
       NODE_ENV: production
@@ -13,7 +13,12 @@ services:
       # 配额日界/月界以服务器本地时区为准：固定北京时间，与前台「每日零点刷新」文案一致（镜像默认 UTC）
       TZ: Asia/Shanghai
     ports:
-      - "${HOST_PORT:-3000}:3000"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - ../data:/app/data
     healthcheck:
@@ -28,7 +33,9 @@ services:
     image: caddy:2
     profiles: ["https"]
     restart: unless-stopped
-    depends_on: [app]
+    depends_on:
+      app:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"

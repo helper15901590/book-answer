@@ -1,135 +1,139 @@
-# 部署手册（Remix Remix 0.991 · 生产上线）
+# 部署手册（Remix AI 单机生产版）
 
-> 适用场景：单台 Linux VPS + Docker 单实例部署（内测期 HTTP 直连，域名备案后经 Caddy 切 HTTPS）。
-> 仓库内相关文件：`docker/Dockerfile`、`docker/compose.yaml`、`docker/Caddyfile.template`、`.env.example`、`scripts/smoke.sh`、`scripts/backup.sh`。
+> 适用架构：单台 Linux VPS、单实例 Node、SQLite WAL、Caddy HTTPS。该架构不支持多副本或水平扩展。
 
-## 1. VPS 准备
+## 1. 系统准备
 
 ```bash
-# Docker 引擎 + Compose 插件（Debian/Ubuntu 官方脚本方式）
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER   # 重新登录生效
-docker compose version          # 确认可用
-
-# 备份脚本依赖宿主机 sqlite3（热备份 .backup 命令）
-sudo apt install -y sqlite3
-
-# 防火墙：内测期仅放行 SSH + 应用端口；80/443 备案后再开
-sudo ufw allow OpenSSH
-sudo ufw allow 3000/tcp
-sudo ufw enable
+sudo apt update
+sudo apt install -y docker.io docker-compose-plugin sqlite3 restic curl
+sudo usermod -aG docker "$USER"
 ```
 
-## 2. 首次部署
+重新登录后确认 `docker compose version` 可用。
+
+## 2. 配置环境变量
 
 ```bash
-git clone <仓库地址> remix && cd remix    # 或 scp/rsync 上传代码
 cp .env.example .env
+openssl rand -base64 32
 ```
 
-编辑根目录 `.env`（**严禁提交入库**，`.gitignore` 已排除）：
+将生成值写入 `APP_ENCRYPTION_KEY`，并配置：
 
-| 键 | 说明 |
-|----|------|
-| `JWT_SECRET` | 必填，≥16 字符，`openssl rand -hex 32` 生成；缺失时拒绝启动（fail-fast，开发/生产一律强制，无默认密钥） |
-| `ADMIN_PHONE` / `ADMIN_PASSWORD` | 管理后台登录凭证（`POST /api/admin/login` 直接比对，**管理员账号不入库**、不出现在用户列表）；密码**必须为 6 位数字**，缺失或格式错误时后台无法登录并在启动日志告警 |
-| `HOST_PORT` | 宿主端口，默认 3000 |
-| `TRUST_PROXY` | 直连部署保持 `0`；仅 Caddy 反代时置 `1`（见 §5） |
-| LLM 各键 | **OpenAI 兼容接口单路径，二选一**：DeepSeek（`DEEPSEEK_BASE_URL=https://api.deepseek.com/v1` + `DEEPSEEK_MODEL=deepseek-chat`）或阿里云百炼 DashScope（`DEEPSEEK_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1` + `DEEPSEEK_MODEL=qwen-max` 等）。也可留空由管理员登录后在 `/admin` 后台配置（存数据库，优先级更高）。**未配置有效密钥时聊天接口返回 503 明确报错**（离线模板兜底已移除，不再产出伪造回复） |
+- `APP_ORIGIN=https://实际域名`
+- `APP_ENCRYPTION_KEY`：32 字节 base64，缺失时拒绝启动
+- `ADMIN_PHONE`：11 位手机号
+- `ADMIN_PASSWORD`：至少 16 位且包含字母和数字
+- `TRUST_PROXY=1`：仅 Caddy 反代时启用
+- `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL`：可选，也可首次登录后台配置
+- `SENTRY_DSN`：错误跟踪
+- `HEALTHCHECK_PING_URL`：外部健康检查回调
+- `RESTIC_REPOSITORY` / `RESTIC_PASSWORD` / S3 凭据：异地备份
 
-> **HOST_PORT 特别注意**：compose 的端口映射写作 `"${HOST_PORT:-3000}:3000"`，这里的变量插值由 **docker compose 自己**完成，读取的是 **docker/ 目录（compose 文件所在目录）下的 `.env` 或 shell 环境变量**，而 `env_file: ../.env` 只注入**容器内运行时变量**、不参与插值。因此改宿主端口有两种方式：① `HOST_PORT=8080 docker compose -f docker/compose.yaml up -d`；② 在 `docker/` 目录下另建一个只含 `HOST_PORT` 的 `.env`。写在项目根 `.env` 里的 `HOST_PORT` **不会生效**。
+项目不再使用 `JWT_SECRET`，登录态由服务端会话表和 HttpOnly Cookie 提供。
 
-启动：
+## 3. 数据目录
 
 ```bash
-# 容器以非 root 运行（uid 1000，Dockerfile USER node）：先建好数据目录并授权，
-# 否则容器内写库与宿主机非 root 备份 cron（§4）会因权限失败
-mkdir -p data && sudo chown -R 1000:1000 data
-
-docker compose -f docker/compose.yaml up -d --build
-docker compose -f docker/compose.yaml ps        # 等待 STATUS 变为 healthy（healthcheck 每 30s 探测 /api/health）
-docker compose -f docker/compose.yaml logs app  # 应看到 DB 初始化日志且无 better-sqlite3 原生模块报错；若配置了管理员凭证则无「⚠️ 管理员凭证未配置」告警
+mkdir -p data
+sudo chown -R 1000:1000 data
 ```
 
-数据持久化：compose 将宿主 `./data` 挂载为容器 `/app/data`（`DATA_DIR=/app/data`），数据库（`commercial.sqlite` + WAL/SHM）、上传素材（`assets/`）、备份（`backups/`）全部落在宿主 `data/` 目录，容器重建不丢数据。容器时区固定为 `TZ=Asia/Shanghai`（compose environment）：配额的「每日零点刷新 / 每月 1 日刷新」以北京时间为准，海外部署按需调整该值。
+SQLite、上传图片和本地备份均位于 `data/`。异地备份由 restic 写入 S3 兼容对象存储。
 
-> **升级注意（JWT_SECRET 已改为读取时 trim）**：若既有部署的 `JWT_SECRET` 值首尾含空白字符，升级后签名密钥实际值变化，**所有旧 token 失效，用户需重新登录**。属预期行为，无需处理；新建部署不受影响。
-
-> **升级注意（数据库位置迁移）**：由旧版单文件 server.ts 时代的部署升级时，数据库已从仓库根目录 `commercial.sqlite` 迁移至 `data/commercial.sqlite`，需手动 `mv commercial.sqlite data/` 后再启动，否则将**静默以空库启动**（所有用户无法登录）。旧库中可能残留早期 mock 测试账号（如手机号 `13800138921` 等），建议一次性清理：`sqlite3 data/commercial.sqlite "DELETE FROM users WHERE phone LIKE '138001389%';"`。
-
-## 3. 冒烟验证
-
-部署后（以及每次发布后）执行：
+## 4. 启动 HTTPS 服务
 
 ```bash
-BASE=http://<IP>:3000 ADMIN_PHONE=<管理员手机号> ADMIN_CODE=<管理员6位密码> bash scripts/smoke.sh
+cp docker/Caddyfile.template docker/Caddyfile
+# 编辑 docker/Caddyfile，替换域名
+docker compose -f docker/compose.yaml --profile https up -d --build
+docker compose -f docker/compose.yaml ps
 ```
 
-脚本断言：health 200；公开配置不含 `apiKey`、含 `dailyLimits`；游客访问 admin 端点 403；注册/支付端点已移除（404）；未知手机号登录 404；管理员前台登录按「账号不存在」处理；后台登录 → stats → 用户列表不含管理员 → 登录响应不含 password → 聊天链路（已配置 LLM 时断言正常回复，未配置时断言 503/502 明确错误而非伪造模板）；畸形/超长消息体 400 且进程存活；跨用户会话写入 403；后端构建产物 `server.cjs` 不可公网下载；首页与 `/admin` 入口可达。全部通过时退出码为 0。
+应用 3000 端口默认仅绑定宿主机回环地址，不允许绕过 Caddy 直接访问。
 
-> **限流说明**：登录接口限流 10 次/分/IP，冒烟脚本每轮发起前台登录 5 次、后台登录 3 次，均在预算内；但**1 分钟内反复重跑脚本可能撞上登录限流**（返回 429 导致断言失败），重跑请间隔 1 分钟。
+## 5. 首次管理员登录
 
-## 4. 备份 crontab
+1. 打开 `https://域名/leonchan1590`。
+2. 输入 `ADMIN_PHONE` 和 `ADMIN_PASSWORD`。
+3. 系统要求绑定 TOTP，显示 Base32 密钥和 8 个恢复码。
+4. 恢复码仅显示一次，必须离线保存。
+5. 输入认证器动态验证码完成绑定，后续登录必须提供 TOTP 或一次性恢复码。
+
+管理员会话固定 8 小时，不滚动续期。修改环境变量中的管理员密码或重置 MFA 后，已有管理员会话失效。
+
+## 6. 用户账号
+
+系统不开放自助注册：
+
+- 管理员在后台创建账号。
+- 系统生成 16 字符临时密码，只显示一次。
+- 用户首次登录必须设置至少 12 位、包含字母和数字的长期密码。
+- 管理员重置密码会撤销用户全部旧会话。
+- 禁用账号会立即撤销全部会话。
+
+## 7. 发布前清空旧账号
+
+本次上线将清空旧账号、会话和订单，保留技能、标签、LLM 地址/模型和协议配置。先完成备份：
 
 ```bash
-chmod +x scripts/backup.sh
-crontab -e
-# 每天 04:00 热备份（sqlite3 .backup 在线一致性快照），保留 14 天：
-0 4 * * * /opt/remix/scripts/backup.sh >> /opt/remix/data/backups/backup.log 2>&1
+chmod +x scripts/*.sh
+DATA_DIR="$PWD/data" bash scripts/backup.sh
+CONFIRM_ACCOUNT_RESET=RESET_ACCOUNTS npm run db:reset-accounts
 ```
 
-备份产物：`data/backups/db-YYYY-MM-DD.sqlite`，超过 14 天自动清理。注意每日备份仅覆盖数据库，不含 `assets/` 上传素材；迁移时请整目录打包 `data/`。
+确认脚本输出后再重新运行冒烟测试。
 
-**恢复步骤**：
+## 8. 冒烟和容量验证
+
+```bash
+BASE=https://域名 ADMIN_PHONE=管理员手机号 ADMIN_CODE=管理员密码 bash scripts/smoke.sh
+BASE_URL=https://域名/api/health CONNECTIONS=50 DURATION=30 npm run load:test
+```
+
+容量目标为 500 DAU、50 个并发登录用户、10 条并发 SSE。SSE 成本测试应使用模拟上游，禁止直接消耗真实模型预算。
+
+## 9. 备份与恢复
+
+每日异地备份，保留 30 天，RPO 24 小时、RTO 4 小时：
+
+```bash
+0 4 * * * cd /opt/remix && DATA_DIR=/opt/remix/data /opt/remix/scripts/backup.sh >> /opt/remix/data/backups/cron.log 2>&1
+```
+
+恢复：
 
 ```bash
 docker compose -f docker/compose.yaml stop app
-cp data/backups/db-2026-09-07.sqlite data/commercial.sqlite
-rm -f data/commercial.sqlite-wal data/commercial.sqlite-shm   # 旧 WAL/SHM 必须一并清除
-docker compose -f docker/compose.yaml up -d app
-curl -s http://localhost:3000/api/health                       # 确认恢复成功
+DATA_DIR="$PWD/data" bash scripts/restore.sh data/backups/remix-YYYY-MM-DD_HHMMSS.tar.gz
+docker compose -f docker/compose.yaml --profile https up -d app
+curl -fsS https://域名/api/health
 ```
 
-## 5. 备案后切 HTTPS
+每周至少执行一次 `scripts/verify-backup.sh` 并在隔离目录完成恢复演练。
 
-1. 生成正式 Caddyfile：`cp docker/Caddyfile.template docker/Caddyfile`，把 `你的域名.com` 替换为已备案域名（该文件含真实域名，`.dockerignore` 已排除，勿提交）。
-2. **在根 `.env` 中设置 `TRUST_PROXY=1`（必做）**：Caddy 反代后，若不开启该开关，express-rate-limit 看到的客户端 IP 全部是容器网关 IP，**所有用户共享同一个限流桶**（全局 300/分、登录 10/分会被全站用户共同消耗，极易误伤）。开启后以 `X-Forwarded-For` 第一跳计真实 IP。直连部署（无反代）严禁开启，否则客户端可伪造该头绕过限流。
-3. 防火墙放行 `80/tcp`、`443/tcp`。
-4. 启动：`docker compose -f docker/compose.yaml --profile https up -d`（Caddy 自动申请/续期 Let's Encrypt 证书；模板已含 `flush_interval -1` 保障 SSE 流式不缓冲）。
-5. 验证：`https://域名/admin` 可打开管理后台登录页；`curl -s https://域名/api/health` 返回 200；再跑一遍 §3 冒烟（`BASE=https://域名`）。
-6. 此时可将应用端口从公网收回（防火墙删除 3000 放行，仅保留 SSH + 80/443）。
-
-## 6. 残余风险声明（内测期已知并接受）
-
-- **HTTP 明文**：备案前直连 HTTP，JWT 与密码可被链路嗅探，仅限小范围可信网络内测使用。
-- **6 位数字密码**：密码空间 10^6 有限，依赖登录限流（10 次/分/IP）缓解撞库；建议管理员账号使用高熵 6 位数字并定期更换。
-- **单实例架构**：better-sqlite3 本地文件 + 进程内状态，不支持水平扩展/多副本；扩容需先改造存储层。
-- **匿名聊天 IP 限流共享**：匿名聊天按 IP 限流 10 次/分：同一 NAT 出口的多位游客共享该桶（内测规模可接受；已认证用户不受影响，走配额体系）。
-- **chat userId 无 JWT 时被信任（历史遗留）**：知道他人 userId 者可经 `GET /api/chat/sessions` 读其会话历史。UUID 随机化已大幅提高猜测门槛，内测期（≤500 用户、管理员建号）接受该风险；会话写入端点（`/api/chat/stream`、`/api/chat/send`）已加归属校验，有主会话仅本人可续写。后续迭代应改为仅信 req.user 并为游客发放临时会话凭据。
-- **管理员重置密码不吊销旧 JWT**：管理员重置用户密码后，该用户已签发的 JWT 在到期前（≤7 天）仍然有效；如需立即失效可删除用户重建或等待过期。
-
-## 7. 日常运维
+## 10. 上线检查
 
 ```bash
-# 日志
-docker compose -f docker/compose.yaml logs -f app
-
-# 更新发布
-git pull
-docker compose -f docker/compose.yaml up -d --build   # 重建镜像并滚动替换，data/ 卷不动
-bash scripts/smoke.sh                                  # 发布后冒烟（BASE=... ADMIN_PHONE=... ADMIN_CODE=...）
-
-# 重启 / 停止（SIGTERM 优雅关闭：停止接流 → 关闭数据库，10s 超时兜底退出）
-docker compose -f docker/compose.yaml restart app
-docker compose -f docker/compose.yaml down             # 仅删容器与网络，data/ 在宿主持久保留
+npm run verify
+docker compose -f docker/compose.yaml config
 ```
 
-**数据目录说明**（宿主 `data/`，即容器 `/app/data`）：
+验收要求：
 
-| 路径 | 内容 |
-|------|------|
-| `commercial.sqlite`（+`-wal`/`-shm`） | 主数据库（users/skills/chat_sessions/orders/system_config），WAL 模式 write-through |
-| `assets/` | 后台上传的素材（`/assets` 静态服务） |
-| `backups/` | backup.sh 产物与 cron 日志 |
+- 未登录访问聊天、会话 API 返回 401
+- 公开技能接口不含 `systemPrompt`、`bookContent`、`catalogContent`
+- 用户无法读取、续写或删除他人会话
+- 管理员必须完成 TOTP，恢复码只能使用一次
+- 改密或禁用后旧会话立即失效
+- LLM 上游失败时配额自动回退
+- 健康检查包含数据库连通性
+- 异地备份可恢复且 `PRAGMA integrity_check` 返回 ok
 
-迁移/克隆部署时整目录打包 `data/` 即可；**任何情况下不要将 `data/`、`.env` 提交入 git**。
+## 11. 当前边界
+
+- 不支持多实例、高可用或蓝绿发布
+- 不包含在线支付、退款、发票和支付回调
+- 会员仍由管理员手工开通
+- SQLite 写操作同步执行，业务增长后应评估 PostgreSQL、Redis 和对象存储

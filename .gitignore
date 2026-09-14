@@ -12,3 +12,7 @@ commercial.sqlite*
 /data/
 # 会话工作区（SDD 台账、交接记录等），仅本地，严禁入库
 .superpowers/
+
+# local verification databases
+.test-runtime/
+.config-check-runtime/

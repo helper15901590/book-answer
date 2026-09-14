@@ -18,3 +18,7 @@ docs
 commercial.sqlite*
 # 部署时才生成的实际 Caddyfile（含真实域名），模板即可
 docker/Caddyfile
+
+.test-runtime
+.config-check-runtime
+coverage
