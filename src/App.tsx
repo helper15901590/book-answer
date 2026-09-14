@@ -1,107 +1,60 @@
 import React, { useState } from 'react';
-import { UserProfile, Skill, LLMConfig, getEffectiveMembershipTier } from './types';
-import { INITIAL_SKILLS, DEFAULT_LLM_CONFIG } from './data/initialData';
-import { loadGuestUser } from './lib/guestQuota';
+import { UserProfile, Skill, LLMConfig, AuthPolicy } from './types';
+import { DEFAULT_LLM_CONFIG } from './data/initialData';
 import { AiStudioWorkspace } from './components/AiStudioWorkspace';
 import { LoginModal } from './components/LoginModal';
 
+const DEFAULT_AUTH_POLICY: AuthPolicy = { userMinLength: 12, adminMinLength: 16, registrationEnabled: false };
+
 export default function App() {
-  // 游客额度按日计算：初始状态携带 localStorage 中的今日已用次数
-  const [user, setUser] = useState<UserProfile>(loadGuestUser);
-  const [skills, setSkills] = useState<Skill[]>(INITIAL_SKILLS);
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [llmConfig, setLlmConfig] = useState<LLMConfig>(DEFAULT_LLM_CONFIG);
+  const [authPolicy, setAuthPolicy] = useState<AuthPolicy>(DEFAULT_AUTH_POLICY);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
 
-  // Sync with backend database on mount & revalidation
-  const refreshUserProfile = React.useCallback(() => {
-    const token = localStorage.getItem('auth_token');
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+  const refreshUserProfile = React.useCallback(async (): Promise<UserProfile | null> => {
+    try {
+      const response = await fetch('/api/auth/me', { credentials: 'include' });
+      if (!response.ok) {
+        setUser(null);
+        return null;
+      }
+      const data = await response.json();
+      const nextUser = data.user || null;
+      setUser(nextUser);
+      return nextUser;
+    } catch (error) {
+      console.warn('同步用户状态失败:', error);
+      return null;
     }
-
-    return fetch('/api/auth/me', { headers })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.user) {
-          if (data.user.role === 'admin' || data.user.isAdmin) {
-            // 管理员为纯后台身份：主前端不呈现，清理历史遗留的前端 token
-            localStorage.removeItem('auth_token');
-          } else if (data.user.role === 'guest') {
-            // 服务端返回游客载荷：若本地还持有 token 说明已失效（过期/被清），清理之；
-            // 本地同为游客时跳过同步（保护当日本地计数不被服务端的 0 计数清零），
-            // 本地为会员时必须正常降级回游客态（旧实现一律跳过，导致 token 过期后 UI 永久滞留会员态）
-            if (localStorage.getItem('auth_token')) {
-              localStorage.removeItem('auth_token');
-            }
-            setUser((prev) => (prev.role === 'guest' ? prev : loadGuestUser()));
-          } else {
-            setUser(data.user);
-          }
-        }
-        return data.user;
-      })
-      .catch((e) => console.warn('Sync user error:', e));
   }, []);
 
   React.useEffect(() => {
-    refreshUserProfile();
+    void refreshUserProfile();
+    fetch('/api/skills').then((response) => response.json()).then((data) => {
+      if (Array.isArray(data.skills) && data.skills.length) setSkills(data.skills);
+    }).catch((error) => console.warn('同步技能失败:', error));
+    fetch('/api/config/public').then((response) => response.json()).then((data) => {
+      if (data.llmConfig) setLlmConfig(data.llmConfig);
+      if (data.authPolicy) setAuthPolicy(data.authPolicy);
+    }).catch((error) => console.warn('同步配置失败:', error));
 
-    // Listen to tab focus & visibility changes to keep user data in perfect sync with backend
-    const handleFocus = () => {
-      refreshUserProfile();
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        refreshUserProfile();
-      }
-    };
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    fetch('/api/skills')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.skills && data.skills.length > 0) setSkills(data.skills);
-      })
-      .catch((e) => console.warn('Sync skills error:', e));
-
-    fetch('/api/config/public')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.llmConfig) {
-          setLlmConfig(data.llmConfig);
-          setUser((prev) => {
-            const effTier = getEffectiveMembershipTier(prev);
-            let limit = data.llmConfig.dailyLimits?.freeMember ?? 10;
-            if (prev.role === 'guest') {
-              limit = data.llmConfig.dailyLimits?.guestUser ?? 3;
-            } else if (effTier === 'monthly_member') {
-              limit = data.llmConfig.dailyLimits?.monthlyMember ?? 100;
-            } else if (effTier === 'quarterly_member') {
-              limit = data.llmConfig.dailyLimits?.quarterlyMember ?? 200;
-            } else if (effTier === 'yearly_member') {
-              limit = data.llmConfig.dailyLimits?.yearlyMember ?? 500;
-            }
-            return { ...prev, dailyMaxChats: limit };
-          });
-        }
-      })
-      .catch((e) => console.warn('Sync LLM config error:', e));
-
+    const sync = () => { void refreshUserProfile(); };
+    window.addEventListener('focus', sync);
+    const handleVisibility = () => { if (document.visibilityState === 'visible') void refreshUserProfile(); };
+    document.addEventListener('visibilitychange', handleVisibility);
     return () => {
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', sync);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [refreshUserProfile]);
 
-  // Modals & Navigation state
   const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const [isLoginTriggeredBy401, setIsLoginTriggeredBy401] = useState(false);
+  const [loginReason, setLoginReason] = useState<'required' | 'quota'>('required');
 
   return (
     <div className="min-h-screen bg-white text-gray-900 font-sans antialiased relative overflow-hidden selection:bg-gray-900 selection:text-white">
-      {/* Google AI Studio Workspace Layout */}
       <AiStudioWorkspace
         skills={skills}
         setSkills={setSkills}
@@ -111,30 +64,16 @@ export default function App() {
         selectedSkill={selectedSkill}
         setSelectedSkill={setSelectedSkill}
         onRefreshUser={refreshUserProfile}
-        onOpenLogin={() => {
-          setIsLoginTriggeredBy401(false);
-          setIsLoginOpen(true);
-        }}
-        onTriggerLogin401={() => {
-          setIsLoginTriggeredBy401(true);
-          setIsLoginOpen(true);
-        }}
+        onOpenLogin={() => { setLoginReason('required'); setIsLoginOpen(true); }}
+        onTriggerLogin401={() => { setLoginReason('quota'); setIsLoginOpen(true); }}
       />
-
-      {/* Modals */}
       {isLoginOpen && (
         <LoginModal
           llmConfig={llmConfig}
-          isTriggeredBy401={isLoginTriggeredBy401}
-          onSuccess={(updatedFields) => {
-            setUser((prev) => ({ ...prev, ...updatedFields }));
-            setIsLoginOpen(false);
-            setIsLoginTriggeredBy401(false);
-          }}
-          onClose={() => {
-            setIsLoginOpen(false);
-            setIsLoginTriggeredBy401(false);
-          }}
+          authPolicy={authPolicy}
+          reason={loginReason}
+          onSuccess={(nextUser) => { setUser(nextUser); setIsLoginOpen(false); }}
+          onClose={() => setIsLoginOpen(false)}
         />
       )}
     </div>

@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
-# 每日热备份 SQLite（宿主机 crontab 调用，需 apt install sqlite3）
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DATA="${DATA_DIR:-$ROOT/data}"
-KEEP_DAYS=14
+STAMP="$(date +%F_%H%M%S)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$DATA/backups"
-sqlite3 "$DATA/commercial.sqlite" ".backup '$DATA/backups/db-$(date +%F).sqlite'"
-find "$DATA/backups" -name 'db-*.sqlite' -mtime +"$KEEP_DAYS" -delete
-echo "backup done: $DATA/backups/db-$(date +%F).sqlite"
+sqlite3 "$DATA/commercial.sqlite" ".backup '$TMP/commercial.sqlite'"
+sqlite3 "$TMP/commercial.sqlite" "PRAGMA integrity_check;" | grep -qx ok
+if [ -d "$DATA/assets" ]; then cp -a "$DATA/assets" "$TMP/assets"; fi
+tar -C "$TMP" -czf "$DATA/backups/remix-$STAMP.tar.gz" .
+cp "$DATA/backups/remix-$STAMP.tar.gz" "$DATA/backups/latest.tar.gz"
+find "$DATA/backups" -name 'remix-*.tar.gz' -mtime +7 -delete
+if [ -n "${RESTIC_REPOSITORY:-}" ]; then
+  restic backup "$TMP" --tag remix
+  restic forget --keep-daily 30 --prune
+fi
+if [ -n "${HEALTHCHECK_PING_URL:-}" ]; then curl -fsS "$HEALTHCHECK_PING_URL" >/dev/null || true; fi
+echo "backup done: $DATA/backups/remix-$STAMP.tar.gz"

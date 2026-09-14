@@ -46,7 +46,7 @@ import {
   Sparkles,
   Loader2,
 } from 'lucide-react';
-import { apiFetch, authTokenKey } from '../lib/apiFetch';
+import { apiFetch } from '../lib/apiFetch';
 
 interface AdminPanelProps {
   llmConfig: LLMConfig;
@@ -256,6 +256,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     membershipTier: 'monthly_member',
   });
 
+  const [credential, setCredential] = useState<{ title: string; phone: string; password: string } | null>(null);
+
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
   const [editUserForm, setEditUserForm] = useState<{
     phone: string;
@@ -286,7 +288,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // （缺此出口时 token 过期后面板呈「看似正常实则全空」状态，易被误判为数据丢失）
   const ensureAdminAuthorized = (res: Response): Response => {
     if (res.status === 401 || res.status === 403) {
-      localStorage.removeItem(authTokenKey());
+
       window.location.reload();
       throw new Error('登录状态已失效，正在返回登录页');
     }
@@ -299,7 +301,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     try {
       const [resStats, resSkills, resUsers, resLlm, resTags] = await Promise.all([
         apiFetch('/api/admin/stats').then(ensureAdminAuthorized).then((r) => r.json()),
-        fetch('/api/skills').then((r) => r.json()),
+        apiFetch('/api/admin/skills').then(ensureAdminAuthorized).then((r) => r.json()),
         apiFetch('/api/admin/users').then(ensureAdminAuthorized).then((r) => r.json()),
         apiFetch('/api/admin/llm-config').then(ensureAdminAuthorized).then((r) => r.json()),
         fetch('/api/tags').then((r) => r.json()),
@@ -332,9 +334,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setUser((prev) => {
           const effectiveTier = getEffectiveMembershipTier(prev);
           let limit = data.llmConfig.dailyLimits?.freeMember ?? 10;
-          if (prev.role === 'guest') {
-            limit = data.llmConfig.dailyLimits?.guestUser ?? 3;
-          } else if (effectiveTier === 'monthly_member') {
+          if (effectiveTier === 'monthly_member') {
             limit = data.llmConfig.dailyLimits?.monthlyMember ?? 100;
           } else if (effectiveTier === 'quarterly_member') {
             limit = data.llmConfig.dailyLimits?.quarterlyMember ?? 200;
@@ -364,19 +364,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       showToast('手机号码必须为11位阿拉伯数字');
       return;
     }
-    const cleanCode = addUserForm.code.trim();
-    if (!cleanCode) {
-      showToast('请输入登录验证码');
-      return;
-    }
-    if (!/^\d{6}$/.test(cleanCode)) {
-      showToast('验证码必须为6位阿拉伯数字');
-      return;
-    }
     try {
       const payload = {
         phone: cleanPhone,
-        code: cleanCode,
         membershipTier: addUserForm.membershipTier,
       };
       const res = await apiFetch('/api/admin/users/create', {
@@ -386,7 +376,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
       const data = await res.json();
       if (data.success) {
-        showToast('内部用户创建成功！');
+        if (data.temporaryPassword) setCredential({ title: '用户创建成功', phone: cleanPhone, password: data.temporaryPassword });
+        else showToast('用户创建成功');
         setIsAddUserModalOpen(false);
         setAddUserForm({
           phone: '',
@@ -406,9 +397,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleOpenEditUser = (u: UserProfile) => {
     setEditingUser(u);
     const effectiveTier = getEffectiveMembershipTier(u);
-    const validTier: 'free_member' | 'monthly_member' | 'quarterly_member' | 'yearly_member' =
-      effectiveTier === 'guest' ? 'free_member' : (effectiveTier as any);
-    const phoneDisplay = u.phone || (u.role === 'guest' ? '游客账号' : (u.id ? `138****${u.id.slice(-4)}` : '13800000000'));
+    const validTier: 'free_member' | 'monthly_member' | 'quarterly_member' | 'yearly_member' = effectiveTier;
+    const phoneDisplay = u.phone || '未设置';
     setEditUserForm({
       phone: phoneDisplay,
       // 密码留空表示不修改（列表数据已脱敏，永不回填旧值）
@@ -419,11 +409,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleSaveEditUser = async () => {
     if (!editingUser) return;
-    const cleanCode = editUserForm.code.trim();
-    if (cleanCode && !/^\d{6}$/.test(cleanCode)) {
-      showToast('验证码必须为6位阿拉伯数字');
-      return;
-    }
+
     try {
       const cleanPhone = editUserForm.phone.trim();
       const res = await apiFetch('/api/admin/users/update', {
@@ -433,8 +419,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           userId: editingUser.id,
           // 展示用占位手机号（如 138****xxxx）不回传，避免把占位符写入数据库
           ...(/^\d{11}$/.test(cleanPhone) ? { phone: cleanPhone } : {}),
-          code: cleanCode,
-          password: cleanCode,
           membershipTier: editUserForm.membershipTier,
         }),
       });
@@ -468,7 +452,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (data.success) {
         showToast(`已重置用户 "${u.nickname || u.id}" 的调用额度`);
         if (user.id === u.id) {
-          setUser((prev) => ({ ...prev, dailyUsedCount: 0, guestUsedCount: 0 }));
+          setUser((prev) => ({ ...prev, dailyUsedCount: 0 }));
         }
         fetchAdminData();
       } else {
@@ -476,6 +460,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }
     } catch {
       showToast('请求异常');
+    }
+  };
+
+  const handleResetUserPassword = async (u: UserProfile) => {
+    try {
+      const response = await apiFetch('/api/admin/users/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: u.id }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || '重置失败');
+      setCredential({ title: '密码已重置', phone: u.phone || '', password: data.temporaryPassword });
+      fetchAdminData();
+    } catch (error: any) {
+      showToast(error?.message || '重置失败');
+    }
+  };
+
+  const handleToggleUserStatus = async (u: UserProfile) => {
+    const nextStatus = u.status === 'disabled' ? 'active' : 'disabled';
+    try {
+      const response = await apiFetch('/api/admin/users/status', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: u.id, status: nextStatus }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || '状态更新失败');
+      showToast(nextStatus === 'disabled' ? '账号已禁用' : '账号已启用');
+      fetchAdminData();
+    } catch (error: any) {
+      showToast(error?.message || '状态更新失败');
+    }
+  };
+
+  const handleReviewDeletion = async (u: UserProfile, approve: boolean) => {
+    try {
+      const list = await apiFetch('/api/admin/deletion-requests').then((response) => response.json());
+      const request = Array.isArray(list.requests) ? list.requests.find((item: any) => item.userId === u.id) : null;
+      if (!request) throw new Error('未找到注销申请');
+      const response = await apiFetch(`/api/admin/deletion-requests/${request.id}/${approve ? 'approve' : 'reject'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || '处理失败');
+      showToast(approve ? '注销已批准并匿名化' : '注销申请已驳回');
+      fetchAdminData();
+    } catch (error: any) {
+      showToast(error?.message || '处理失败');
     }
   };
 
@@ -574,7 +598,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       // apiFetch 会按当前页面自动注入正确的 Authorization（后台页用 admin_auth_token）
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
-      const res = await apiFetch('/api/skills/generate-questions', {
+      const res = await apiFetch('/api/admin/skills/generate-questions', {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -842,8 +866,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleUpdateUserRole = async (targetUser: UserProfile, newRole: UserProfile['role']) => {
     try {
-      const limits = llmConfig.dailyLimits || { guestUser: 3, freeMember: 10 };
-      const newMaxChats = newRole === 'guest' ? (limits.guestUser ?? 3) : (limits.freeMember ?? 10);
+      const limits = llmConfig.dailyLimits || { freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 };
+      const newMaxChats = limits.freeMember ?? 10;
 
       const res = await apiFetch('/api/admin/users/update', {
         method: 'POST',
@@ -856,7 +880,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
       const data = await res.json();
       if (data.success) {
-        showToast(`用户 ${targetUser.nickname} 身份已更新为 ${newRole === 'guest' ? '游客' : '会员'}`);
+        showToast(`用户 ${targetUser.nickname} 身份已更新为 ${newRole === 'admin' ? '管理员' : '会员'}`);
         if (targetUser.id === user.id) {
           setUser({ ...user, role: newRole, dailyMaxChats: newMaxChats });
         }
@@ -1095,7 +1119,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               { key: 'monthly_member', label: '月度会员', bar: 'bg-blue-500' },
               { key: 'quarterly_member', label: '季度会员', bar: 'bg-indigo-500' },
               { key: 'yearly_member', label: '年度会员', bar: 'bg-amber-500' },
-              { key: 'guest', label: '游客账号', bar: 'bg-slate-200' },
             ];
             const maxTopSkill = Math.max(1, ...stats.topSkills.map((s) => s.searchCount));
             const statCard = (label: string, value: number | string, sub?: string) => (
@@ -1114,7 +1137,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   {sectionTitle('用户概览')}
                   <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
                     {statCard('注册总数', stats.totalUsers, `今日新增 +${stats.newUsersToday}`)}
-                    {statCard('在线用户', stats.onlineUsers, '10 分钟内有活动的登录用户（游客不计）')}
+                    {statCard('在线用户', stats.onlineUsers, '10 分钟内有活动的登录用户')}
                     {statCard('今日活跃', stats.todayActiveUsers, '今日有过对话行为的用户')}
                     {statCard('近 7 日活跃', stats.activeUsers7d, `近 7 日新增 +${stats.newUsers7d}`)}
                     {statCard('近 30 日活跃', stats.activeUsers30d, '按最近活跃日期统计')}
@@ -1685,10 +1708,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           </tr>
                         ) : (
                           displayedUsers.map((u) => {
-                            const isGuest = u.role === 'guest';
                             const effectiveTier = getEffectiveMembershipTier(u);
                             const limits = llmConfig.dailyLimits || {
-                              guestUser: 3,
                               freeMember: 10,
                               monthlyMember: 100,
                               quarterlyMember: 200,
@@ -1713,10 +1734,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               tierLabel = '月度会员';
                               tierBadgeColor = 'bg-slate-100/80 text-slate-700 border border-slate-200/60 font-medium';
                               maxLimit = limits.monthlyMember || 100;
-                            } else if (isGuest) {
-                              tierLabel = '游客';
-                              tierBadgeColor = 'text-slate-400 border border-dashed border-slate-200 font-normal';
-                              maxLimit = limits.guestUser || 3;
                             }
                             // 管理员不受额度限制，与主前端一致显示 9999
                             if (u.role === 'admin' || u.isAdmin) maxLimit = 9999;
@@ -1734,8 +1751,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               }
                             }
 
-                            const used = isGuest ? (u.guestUsedCount || 0) : (u.dailyUsedCount || 0);
-                            // 额度周期单位：月/季/年度会员按月，游客/普通会员按日
+                            const used = u.dailyUsedCount || 0;
+                            // 额度周期单位：月/季/年度会员按月，普通会员按日
                             const quotaUnit = effectiveTier === 'monthly_member' || effectiveTier === 'quarterly_member' || effectiveTier === 'yearly_member' ? '次/月' : '次/日';
 
                             return (
@@ -1743,9 +1760,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 <td className="py-3 px-4">
                                   <div className="flex flex-col font-mono text-xs">
                                     <span className="font-medium text-slate-900">
-                                      {u.phone || (isGuest ? '游客账号' : (u.id ? `138****${u.id.slice(-4)}` : '13800000000'))}
+                                      {u.phone || '未设置'}
+
                                     </span>
                                     <span className="text-[11px] text-slate-400">ID: {u.id}</span>
+                                    {u.status && u.status !== 'active' && (<span className="text-[10px] mt-1 text-amber-700">{u.status === 'disabled' ? '已禁用' : u.status === 'deletion_pending' ? '待注销' : '已注销'}</span>)}
                                   </div>
                                 </td>
                                 <td className="py-3 px-4 font-medium whitespace-nowrap">
@@ -1779,6 +1798,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                     >
                                       <RotateCcw className="w-3.5 h-3.5" />
                                     </button>
+                                    <button
+                                      type="button"
+                                      title="重置密码"
+                                      onClick={() => handleResetUserPassword(u)}
+                                      className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-900 rounded-lg transition-colors cursor-pointer"
+                                    >
+                                      <KeyRound className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      title={u.status === 'disabled' ? '启用账号' : '禁用账号'}
+                                      onClick={() => handleToggleUserStatus(u)}
+                                      className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-900 rounded-lg transition-colors cursor-pointer"
+                                    >
+                                      <ShieldCheck className="w-3.5 h-3.5" />
+                                    </button>
+                                    {u.status === 'deletion_pending' && (
+                                      <>
+                                        <button type="button" title="批准注销" onClick={() => handleReviewDeletion(u, true)} className="px-2 py-1 text-[10px] rounded bg-rose-50 text-rose-700">批准注销</button>
+                                        <button type="button" title="驳回注销" onClick={() => handleReviewDeletion(u, false)} className="px-2 py-1 text-[10px] rounded bg-slate-100 text-slate-700">驳回</button>
+                                      </>
+                                    )}
                                     <button
                                       type="button"
                                       title="删除用户"
@@ -1820,36 +1861,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-800 bg-white">
-                      {/* 游客 */}
-                      <tr className="hover:bg-slate-50/60 transition-colors">
-                        <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-slate-900">未登录（游客）</span>
-                            <span className="text-[10px] px-2 py-0.5 rounded text-slate-400 border border-dashed border-slate-200 font-normal">Guest</span>
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-1.5 max-w-[130px]">
-                            <input
-                              type="number"
-                              value={llmConfig.dailyLimits?.guestUser ?? 3}
-                              onChange={(e) => setLlmConfig({
-                                ...llmConfig,
-                                dailyLimits: {
-                                  ...(llmConfig.dailyLimits || { guestUser: 3, freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
-                                  guestUser: parseInt(e.target.value) || 0,
-                                }
-                              })}
-                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200/90 rounded-lg text-slate-900 font-mono text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
-                            />
-                            <span className="text-slate-400 text-[11px] shrink-0">次/日</span>
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-4 text-slate-500 text-xs">
-                          免登录访问用户的每日基础调用频次（每日零点刷新）
-                        </td>
-                      </tr>
-
                       {/* 普通会员 */}
                       <tr className="hover:bg-slate-50/60 transition-colors">
                         <td className="py-3.5 px-4">
@@ -1866,7 +1877,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onChange={(e) => setLlmConfig({
                                 ...llmConfig,
                                 dailyLimits: {
-                                  ...(llmConfig.dailyLimits || { guestUser: 3, freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
+                                  ...(llmConfig.dailyLimits || { freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
                                   freeMember: parseInt(e.target.value) || 0,
                                 }
                               })}
@@ -1896,7 +1907,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onChange={(e) => setLlmConfig({
                                 ...llmConfig,
                                 dailyLimits: {
-                                  ...(llmConfig.dailyLimits || { guestUser: 3, freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
+                                  ...(llmConfig.dailyLimits || { freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
                                   monthlyMember: parseInt(e.target.value) || 0,
                                 }
                               })}
@@ -1926,7 +1937,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onChange={(e) => setLlmConfig({
                                 ...llmConfig,
                                 dailyLimits: {
-                                  ...(llmConfig.dailyLimits || { guestUser: 3, freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
+                                  ...(llmConfig.dailyLimits || { freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
                                   quarterlyMember: parseInt(e.target.value) || 0,
                                 }
                               })}
@@ -1956,7 +1967,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onChange={(e) => setLlmConfig({
                                 ...llmConfig,
                                 dailyLimits: {
-                                  ...(llmConfig.dailyLimits || { guestUser: 3, freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
+                                  ...(llmConfig.dailyLimits || { freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 }),
                                   yearlyMember: parseInt(e.target.value) || 0,
                                 }
                               })}
@@ -1974,7 +1985,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
 
                 <p className="text-[11px] text-slate-400 px-1">
-                  提示：修改调用上限后（游客/普通会员按日计算，月度/季度/年度会员按月计算），点击下方“保存资源配置”按钮即可实时生效。
+                  提示：修改调用上限后（普通会员按日计算，月度/季度/年度会员按月计算），点击下方“保存资源配置”按钮即可实时生效。
                 </p>
 
                 <div className="flex justify-end pt-2">
@@ -2883,22 +2894,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </p>
               </div>
 
-              {/* 用户登录验证码 */}
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">
-                  登录验证码 <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  placeholder="6位阿拉伯数字验证码"
-                  value={addUserForm.code}
-                  onChange={(e) => setAddUserForm({ ...addUserForm, code: e.target.value.replace(/\D/g, '').slice(0, 6) })}
-                  className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-900 text-xs font-mono focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
-                />
-              </div>
-
               {/* 会员等级 */}
               <div>
                 <label className="block font-medium text-slate-700 mb-1">
@@ -2978,22 +2973,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 />
               </div>
 
-              {/* 登录验证码 */}
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">
-                  密码 / 登录验证码 <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  placeholder="6位阿拉伯数字验证码"
-                  value={editUserForm.code}
-                  onChange={(e) => setEditUserForm({ ...editUserForm, code: e.target.value.replace(/\D/g, '').slice(0, 6) })}
-                  className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-900 text-xs font-mono focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
-                />
-              </div>
-
               {/* 会员等级 */}
               <div>
                 <label className="block font-medium text-slate-700 mb-1">
@@ -3029,6 +3008,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <span>保存更改</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ONE-TIME CREDENTIAL MODAL */}
+      {credential && (
+        <div className="fixed inset-0 z-80 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-xl p-5 w-full max-w-md shadow-xl border border-slate-200 text-left space-y-4">
+            <div className="flex items-center gap-2 text-emerald-700">
+              <KeyRound className="w-4 h-4" />
+              <h3 className="text-sm font-semibold">{credential.title}</h3>
+            </div>
+            <div className="text-xs text-slate-600 space-y-1">
+              <p>手机号：<span className="font-mono text-slate-900">{credential.phone}</span></p>
+              <p>临时密码（仅显示一次）：</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 break-all bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm text-gray-900">{credential.password}</code>
+                <button type="button" onClick={() => navigator.clipboard.writeText(credential.password)} className="px-3 py-2 rounded-lg bg-gray-900 text-white text-xs">复制</button>
+              </div>
+            </div>
+            <button type="button" onClick={() => setCredential(null)} className="w-full py-2 bg-gray-900 text-white rounded-lg text-xs font-medium">我已安全保存</button>
           </div>
         </div>
       )}

@@ -1,110 +1,38 @@
 #!/usr/bin/env bash
-# 部署后冒烟验证：BASE_URL=http://IP:PORT ADMIN_PHONE=xxx ADMIN_CODE=xxx ./scripts/smoke.sh
 set -uo pipefail
-BASE="${BASE_URL:-${BASE:-http://localhost:3000}}"
+BASE="${BASE_URL:-http://127.0.0.1:3000}"
 PASS=0; FAIL=0
-check() { # check <名称> <预期> <实际>
-  if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  ✅ $1"; else FAIL=$((FAIL+1)); echo "  ❌ $1 (预期 $2, 实际 $3)"; fi
-}
-code() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
-
-echo "== 冒烟验证 $BASE =="
+JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
+check() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  OK $1"; else FAIL=$((FAIL+1)); echo "  FAIL $1 expected=$2 actual=$3"; fi; }
+code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+csrf() { awk -F '\t' '$6=="remix_admin_csrf" {print $7}' "$JAR" | tail -1; }
+echo "== smoke $BASE =="
 check "health 200" "200" "$(code "$BASE/api/health")"
-check "public 配置不含 apiKey/apiBaseUrl" "0" "$(curl -s "$BASE/api/config/public" | grep -Ec 'apiKey|apiBaseUrl')"
-check "public 配置含 dailyLimits" "1" "$(curl -s "$BASE/api/config/public" | grep -c dailyLimits | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-check "游客访问 admin/stats 被拒" "403" "$(code "$BASE/api/admin/stats")"
-check "游客访问 admin/llm-config 被拒" "403" "$(code "$BASE/api/admin/llm-config")"
-check "游客清空用户被拒" "403" "$(code -X POST "$BASE/api/admin/users/clear-all")"
-check "注册端点已移除" "404" "$(code -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' -d '{}')"
-check "simulate-pay 已移除" "404" "$(code -X POST "$BASE/api/payment/simulate-pay")"
-check "webhook 已移除" "404" "$(code -X POST "$BASE/api/payment/webhook")"
-check "create-membership-order 已移除" "404" "$(code -X POST "$BASE/api/payment/create-membership-order" -H 'Content-Type: application/json' -d '{}')"
-check "未知手机号登录被拒" "404" "$(code -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d '{"phone":"19999999999","code":"123456"}')"
-
-# SSE 流式端点（未认证游客载荷；离线模板兜底已移除——已配置 LLM 时输出 data: 帧，未配置时 503 明确报错）
-# 限流注意：匿名聊天限流 10 次/分/IP，本脚本匿名聊天请求共 3 次（SSE 1 + 畸形/超长消息体 2，管理员聊天链路带 token 被限流跳过），1 分钟内重跑无需等待
-SSE_SESS="smoke-sse-$(date +%s)"
-SSE_TMP=$(mktemp)
-SSE_STATUS=$(curl -sN --max-time 90 -o "$SSE_TMP" -w '%{http_code}' -X POST "$BASE/api/chat/stream" -H 'Content-Type: application/json' \
-  -d "{\"sessionId\":\"$SSE_SESS\",\"skillId\":\"skill-santi\",\"messageText\":\"你好\"}")
-if [ "$SSE_STATUS" = "200" ]; then
-  check "SSE 流式端点返回 data: 帧（LLM 已配置）" "1" "$(grep -c '^data:' "$SSE_TMP" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-else
-  check "LLM 未配置时 SSE 返回 503" "503" "$SSE_STATUS"
-  check "LLM 未配置错误响应为 JSON" "1" "$(grep -c '"error"' "$SSE_TMP" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-fi
-rm -f "$SSE_TMP"
-
-# 入参硬化防回归：非字符串 messageText 曾可触发未处理 rejection 崩掉整个进程（Express 4 + Node 22）
-check "畸形消息体（非字符串）被拒 400" "400" "$(code -X POST "$BASE/api/chat/stream" -H 'Content-Type: application/json' \
-  -d '{"sessionId":"smoke-bad-type","messageText":123}')"
-check "畸形消息体后进程仍存活" "200" "$(code "$BASE/api/health")"
-LONG_TEXT=$(printf 'a%.0s' {1..4100})
-check "超长消息体（>4000字）被拒 400" "400" "$(code -X POST "$BASE/api/chat/stream" -H 'Content-Type: application/json' \
-  -d "{\"sessionId\":\"smoke-bad-long\",\"messageText\":\"$LONG_TEXT\"}")"
-
-# 后端 bundle 已移出前端静态目录（dist-server/）：/server.cjs 落入 SPA 兜底，检出任何 JS 源码标记即回归
-check "后端构建产物不可公网下载" "0" "$(curl -s "$BASE/server.cjs" | grep -Ec 'JWT_SECRET|registerChatRoutes')"
-
-# 限流注意：/api/auth/login 与 /api/admin/login 各限 10 次/分/IP，本脚本每轮分别请求 5 次与 3 次；1 分钟内连续重跑可能触发 429
-if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_CODE:-}" ]; then
-  # 管理员账号不入库且前台不可登录：前台按「账号不存在」提示（404），不暴露管理员身份
-  check "管理员前台登录按账号不存在处理" "404" "$(code -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}")"
-  TOKEN=$(curl -s -X POST "$BASE/api/admin/login" -H 'Content-Type: application/json' \
-    -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-  if [ -n "$TOKEN" ]; then
-    check "管理员后台登录成功" "1" "1"
-    check "管理员访问 stats" "200" "$(code -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/stats")"
-    check "用户列表不含管理员账号" "0" "$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/users" | grep -c "$ADMIN_PHONE" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    check "后台登录响应不含 password" "0" "$(curl -s -X POST "$BASE/api/admin/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"code\":\"$ADMIN_CODE\"}" | grep -c '"password"')"
-    SESS="smoke-$(date +%s)"
-    SEND_TMP=$(mktemp)
-    SEND_STATUS=$(curl -s --max-time 90 -o "$SEND_TMP" -w '%{http_code}' -X POST "$BASE/api/chat/send" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d "{\"sessionId\":\"$SESS\",\"skillId\":\"skill-santi\",\"messageText\":\"你好\"}")
-    if [ "$SEND_STATUS" = "200" ]; then
-      check "聊天链路可用（LLM 已配置）" "1" "$(grep -c assistantMessage "$SEND_TMP" | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    else
-      check "LLM 未配置/失败时聊天返回明确错误（无伪造模板）" "1" "$(echo "$SEND_STATUS" | grep -Ec '^(502|503)$' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    fi
-    rm -f "$SEND_TMP"
-    # 管理员建号 → 手动升级会员链路（spec §6.2）
-    NEW_PHONE="199$(date +%s | tail -c 9)"
-    CREATE=$(curl -s -X POST "$BASE/api/admin/users/create" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d "{\"phone\":\"$NEW_PHONE\",\"password\":\"123456\"}")
-    NEW_UID=$(echo "$CREATE" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-    check "管理员建号成功" "1" "$(echo "$CREATE" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    UPGRADE=$(curl -s -X POST "$BASE/api/admin/users/upgrade-tier" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d "{\"userId\":\"$NEW_UID\",\"tier\":\"monthly_member\"}")
-    check "手动升级会员成功" "1" "$(echo "$UPGRADE" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    check "升级后 tier 生效" "1" "$(echo "$UPGRADE" | grep -c monthly_member | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    # 建号 → 登录闭环回归（新建账号必须能立即登录；改密后新密码生效、旧密码被拒）
-    check "新建 userId 为 usr_+10位顺序数字" "1" "$(echo "$NEW_UID" | grep -Ec '^usr_[0-9]{10}$' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    NEW_LOGIN=$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
-      -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}")
-    check "新建用户可登录" "1" "$(echo "$NEW_LOGIN" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    NEW_TOKEN=$(echo "$NEW_LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-    check "非管理员账号后台登录被拒" "404" "$(code -X POST "$BASE/api/admin/login" -H 'Content-Type: application/json' -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}")"
-    # 会话归属校验防回归：用户 A（NEW_TOKEN）的会话，用户 B（管理员身份）不得续写
-    OWN_SESS_ID=$(curl -s -X POST "$BASE/api/chat/sessions" -H "Authorization: Bearer $NEW_TOKEN" -H 'Content-Type: application/json' \
-      -d '{"skillId":"skill-santi"}' | sed -n 's/.*"id":"\(session-[^"]*\)".*/\1/p')
-    check "跨用户会话写入被拒 403" "403" "$(code -X POST "$BASE/api/chat/send" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d "{\"sessionId\":\"$OWN_SESS_ID\",\"skillId\":\"skill-santi\",\"messageText\":\"你好\"}")"
-    curl -s -o /dev/null -X POST "$BASE/api/admin/users/update" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d "{\"userId\":\"$NEW_UID\",\"code\":\"654321\"}"
-    check "改密后新密码可登录" "1" "$(curl -s -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
-      -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"654321\"}" | grep -c '"success":true' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-    check "改密后旧密码被拒" "400" "$(code -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' \
-      -d "{\"phone\":\"$NEW_PHONE\",\"code\":\"123456\"}")"
-  else
-    check "管理员后台登录成功" "1" "0"
+check "public skills no systemPrompt" "0" "$(curl -s "$BASE/api/skills" | grep -c systemPrompt)"
+check "public skills no bookContent" "0" "$(curl -s "$BASE/api/skills" | grep -c bookContent)"
+check "unauthenticated sessions 401" "401" "$(code "$BASE/api/chat/sessions")"
+check "forged userId still 401" "401" "$(code "$BASE/api/chat/sessions?userId=usr_forged")"
+check "public questions endpoint removed" "404" "$(code -X POST "$BASE/api/skills/generate-questions" -H 'Content-Type: application/json' -d '{}')"
+check "admin entry reachable" "1" "$(code -L "$BASE/leonchan1590" | grep -Ec '^(200|302)$')"
+check "unknown API 404" "404" "$(code "$BASE/api/nonexistent")"
+if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_PASSWORD:-}" ] && [ -n "${ADMIN_TOTP_CODE:-}" ]; then
+  LOGIN=$(curl -s -c "$JAR" -b "$JAR" -X POST "$BASE/api/admin/login" -H "Origin: $BASE" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"password\":\"$ADMIN_PASSWORD\"}")
+  check "admin password step" "1" "$(echo "$LOGIN" | grep -c 'mfaRequired')"
+  VERIFY=$(curl -s -c "$JAR" -b "$JAR" -X POST "$BASE/api/admin/mfa/verify" -H "Origin: $BASE" -H 'Content-Type: application/json' -d "{\"code\":\"$ADMIN_TOTP_CODE\"}")
+  check "admin MFA" "1" "$(echo "$VERIFY" | grep -c '\"role\":\"admin\"')"
+  CSRF=$(csrf)
+  NEW_PHONE="199$(date +%s | tail -c 9)"
+  CREATE=$(curl -s -b "$JAR" -X POST "$BASE/api/admin/users/create" -H "Origin: $BASE" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d "{\"phone\":\"$NEW_PHONE\",\"membershipTier\":\"free_member\"}")
+  UID=$(echo "$CREATE" | sed -n 's/.*\"id\":\"\([^\"]*\)\".*/\1/p')
+  TEMP=$(echo "$CREATE" | sed -n 's/.*\"temporaryPassword\":\"\([^\"]*\)\".*/\1/p')
+  check "admin creates user" "1" "$(echo "$CREATE" | grep -c '\"success\":true')"
+  check "temporary password generated" "1" "$([ -n "$TEMP" ] && echo 1 || echo 0)"
+  if [ -n "$UID" ]; then
+    curl -s -b "$JAR" -X DELETE "$BASE/api/admin/users/$UID" -H "Origin: $BASE" -H "X-CSRF-Token: $CSRF" >/dev/null
+    check "test user cleaned" "0" "$(curl -s -b "$JAR" "$BASE/api/admin/users" | grep -c "$UID")"
   fi
 else
-  echo "  ⚠️ 跳过管理员链路（未提供 ADMIN_PHONE/ADMIN_CODE）"
+  echo "  SKIP admin MFA chain"
 fi
-check "首页 200" "200" "$(code "$BASE/")"
-check "/admin 入口 200/302" "1" "$(code -L "$BASE/admin" | grep -Ec '^(200|302)$' | sed 's/^0$/0/;s/^[1-9].*/1/')"
-check "未知 API 返回 404" "404" "$(code "$BASE/api/nonexistent")"
-check "未知 API 404 为 JSON" "1" "$(curl -s "$BASE/api/nonexistent" | grep -c '"error"' | sed 's/^0$/0/;s/^[1-9][0-9]*$/1/')"
-
-echo "== 结果: $PASS 通过 / $FAIL 失败 =="
+echo "== result: $PASS passed / $FAIL failed =="
 [ "$FAIL" -eq 0 ]

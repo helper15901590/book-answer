@@ -1,22 +1,25 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {
-  UserProfile,
-  Skill,
+  AdminSecurityRecord,
+  AuthSessionRecord,
   ChatSession,
-  OrderLog,
+  DeletionRequest,
   LLMConfig,
   MembershipTier,
+  OrderLog,
+  Skill,
+  UserProfile,
   getEffectiveMembershipTier,
 } from '../src/types.js';
 import { INITIAL_SKILLS, INITIAL_MENTORS, DEFAULT_LLM_CONFIG } from '../src/data/initialData.js';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, ADMIN_PHONE } from './config.js';
+import { decryptSecret, encryptSecret, isEncryptedSecret } from './services/security.js';
 
 const SQLITE_DB_PATH = path.join(DATA_DIR, 'commercial.sqlite');
 
-// 服务器本地时区的 YYYY-MM-DD：配额日界的唯一口径（建号/统计等处一律复用本函数，
-// 禁止另起 toISOString().slice(0,10) 的 UTC 口径，容器 TZ 即配额时区）
 export function getTodayString(): string {
   const now = new Date();
   const year = now.getFullYear();
@@ -25,8 +28,6 @@ export function getTodayString(): string {
   return `${year}-${month}-${day}`;
 }
 
-// 将任意时间戳转为服务器本地时区的 YYYY-MM-DD：
-// ISO 串（含 'T'，客户端/接口写入）直接解析；SQLite datetime('now') 串无时区标记，按 UTC 解析后转本地
 function toLocalDateString(ts?: string | null): string | null {
   if (!ts) return null;
   const d = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z');
@@ -37,7 +38,6 @@ function toLocalDateString(ts?: string | null): string | null {
   return `${year}-${month}-${day}`;
 }
 
-// 今天往前推 n 天的本地日期串（n=0 即今天）
 function localDateNDaysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
@@ -47,16 +47,23 @@ function localDateNDaysAgo(n: number): string {
   return `${year}-${month}-${day}`;
 }
 
-// 近 n 天日期数组（本地时区，旧→新，末位为今天）
 function lastNDays(n: number): string[] {
   return Array.from({ length: n }, (_, i) => localDateNDaysAgo(n - 1 - i));
 }
 
 function getCurrentMonthString(): string {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  return `${year}-${month}`;
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function sanitizeLLMConfigForStorage(config: LLMConfig): LLMConfig {
+  const clean = { ...config };
+  delete clean.apiKeyConfigured;
+  if (clean.dailyLimits) {
+    const { freeMember, monthlyMember, quarterlyMember, yearlyMember } = clean.dailyLimits;
+    clean.dailyLimits = { freeMember, monthlyMember, quarterlyMember, yearlyMember };
+  }
+  return clean;
 }
 
 export class CommercialSQLDatabase {
@@ -69,11 +76,11 @@ export class CommercialSQLDatabase {
     this.db = new Database(SQLITE_DB_PATH);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
-    this.createTables();
-    this.migrateSchema();
-    this.createIndices();
+    this.db.pragma('foreign_keys = ON');
+    this.initializeSchema();
+    this.migratePlaintextSecrets();
     this.seedInitialData();
-    console.log('✅ Commercial SQLite Engine (better-sqlite3, write-through WAL) at:', SQLITE_DB_PATH);
+    console.log('✅ Commercial SQLite Engine (better-sqlite3, WAL) at:', SQLITE_DB_PATH);
   }
 
   public close(): void {
@@ -81,28 +88,86 @@ export class CommercialSQLDatabase {
     this.db = null;
   }
 
+  public ping(): boolean {
+    if (!this.db) return false;
+    try {
+      this.db.prepare('SELECT 1 AS ok').get();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private tableExists(name: string): boolean {
+    if (!this.db) return false;
+    return !!this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+  }
+
+  private columnExists(table: string, column: string): boolean {
+    if (!this.db) return false;
+    const cols = this.db.pragma(`table_info(${table})`) as { name: string }[];
+    return cols.some((c) => c.name === column);
+  }
+
+  private renameLegacyTableIfNeeded(table: string): void {
+    if (!this.db || !this.tableExists(table)) return;
+    const legacy = `${table}_legacy_v1`;
+    if (this.tableExists(legacy)) return;
+    this.db.exec(`ALTER TABLE ${table} RENAME TO ${legacy}`);
+    const indices = this.db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name = ? AND name NOT LIKE 'sqlite_%'").all(legacy) as { name: string }[];
+    for (const index of indices) {
+      try { this.db.exec(`DROP INDEX IF EXISTS ${index.name}`); } catch {}
+    }
+  }
+
+  private initializeSchema(): void {
+    if (!this.db) return;
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    const applied = this.db.prepare('SELECT version FROM schema_migrations WHERE version = 1').get();
+    if (!applied) {
+      const hadLegacySchema = this.tableExists('users') && !this.columnExists('users', 'status');
+      if (hadLegacySchema) {
+        this.renameLegacyTableIfNeeded('users');
+        this.renameLegacyTableIfNeeded('chat_sessions');
+        this.renameLegacyTableIfNeeded('orders');
+      }
+      this.createTables();
+      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (1)').run();
+    }
+    this.createIndices();
+  }
+
   private createTables(): void {
     if (!this.db) return;
-
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         union_id TEXT UNIQUE,
         phone TEXT UNIQUE,
-        password TEXT,
+        password_hash TEXT,
         nickname TEXT NOT NULL,
         avatar TEXT,
         role TEXT NOT NULL DEFAULT 'member',
+        status TEXT NOT NULL DEFAULT 'active',
         membership_tier TEXT NOT NULL DEFAULT 'free_member',
         membership_expires_at TEXT,
-        daily_max_chats INTEGER DEFAULT 10,
-        daily_used_count INTEGER DEFAULT 0,
-        guest_used_count INTEGER DEFAULT 0,
-        is_admin INTEGER DEFAULT 0,
+        must_change_password INTEGER NOT NULL DEFAULT 1,
+        daily_max_chats INTEGER NOT NULL DEFAULT 10,
+        daily_used_count INTEGER NOT NULL DEFAULT 0,
         last_active_date TEXT,
-        created_at TEXT DEFAULT (datetime('now'))
+        last_active_month TEXT,
+        failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until TEXT,
+        last_login_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        deleted_at TEXT
       );
-
       CREATE TABLE IF NOT EXISTS skills (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -119,21 +184,21 @@ export class CommercialSQLDatabase {
         sample_questions TEXT DEFAULT '[]',
         chat_count INTEGER DEFAULT 0,
         search_count INTEGER DEFAULT 0,
+        skill_type TEXT DEFAULT 'book',
         created_at TEXT DEFAULT (datetime('now'))
       );
-
       CREATE TABLE IF NOT EXISTS chat_sessions (
         id TEXT PRIMARY KEY,
-        user_id TEXT,
+        user_id TEXT NOT NULL,
         skill_id TEXT,
         skill_title TEXT,
         skill_author TEXT,
         skill_cover_url TEXT,
         messages TEXT DEFAULT '[]',
         created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now'))
+        updated_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       );
-
       CREATE TABLE IF NOT EXISTS orders (
         id TEXT PRIMARY KEY,
         trade_no TEXT UNIQUE NOT NULL,
@@ -151,311 +216,378 @@ export class CommercialSQLDatabase {
         paid_at TEXT,
         created_at TEXT DEFAULT (datetime('now'))
       );
-
       CREATE TABLE IF NOT EXISTS system_config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS auth_sessions (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        subject_type TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        csrf_hash TEXT NOT NULL,
+        auth_version TEXT,
+        expires_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT,
+        ip TEXT,
+        user_agent TEXT
+      );
+      CREATE TABLE IF NOT EXISTS auth_challenges (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        payload TEXT DEFAULT '{}',
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS admin_security (
+        id TEXT PRIMARY KEY,
+        totp_secret_enc TEXT,
+        totp_enabled INTEGER NOT NULL DEFAULT 0,
+        recovery_code_hashes TEXT NOT NULL DEFAULT '[]',
+        pending_secret_enc TEXT,
+        pending_recovery_hashes TEXT NOT NULL DEFAULT '[]',
+        auth_version TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS quota_ledger (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        request_id TEXT NOT NULL UNIQUE,
+        period_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        settled_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS deletion_requests (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        requested_at TEXT NOT NULL,
+        reviewed_at TEXT,
+        reviewed_by TEXT,
+        reason TEXT
+      );
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        actor_type TEXT NOT NULL,
+        actor_id TEXT,
+        action TEXT NOT NULL,
+        target_type TEXT,
+        target_id TEXT,
+        metadata TEXT DEFAULT '{}',
+        ip TEXT,
+        user_agent TEXT,
+        created_at TEXT NOT NULL
+      );
     `);
-  }
-
-  /** 增量迁移：已有数据库补建 skill_type 列（幂等，已存在则跳过） */
-  private migrateSchema(): void {
-    if (!this.db) return;
-    try {
-      const cols = this.db.pragma('table_info(skills)') as { name: string }[];
-      if (!cols.some((c) => c.name === 'skill_type')) {
-        this.db.exec(`ALTER TABLE skills ADD COLUMN skill_type TEXT DEFAULT 'book'`);
-        console.log('✅ 迁移：skills 表新增 skill_type 列（默认 book）');
-      }
-    } catch (err) {
-      console.warn('Schema migration notice:', err);
-    }
   }
 
   private createIndices(): void {
     if (!this.db) return;
-    try {
-      this.db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
-        CREATE INDEX IF NOT EXISTS idx_users_tier ON users(membership_tier);
-        CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active_date);
-        CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
-        CREATE INDEX IF NOT EXISTS idx_skills_search ON skills(search_count DESC);
-        CREATE INDEX IF NOT EXISTS idx_sessions_user ON chat_sessions(user_id, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_orders_trade_no ON orders(trade_no);
-        CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-      `);
-    } catch (err) {
-      console.warn('Index creation notice:', err);
-    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
+      CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+      CREATE INDEX IF NOT EXISTS idx_users_tier ON users(membership_tier);
+      CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active_date);
+      CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
+      CREATE INDEX IF NOT EXISTS idx_skills_search ON skills(search_count DESC);
+      CREATE INDEX IF NOT EXISTS idx_sessions_user ON chat_sessions(user_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_auth_sessions_subject ON auth_sessions(subject_type, subject_id);
+      CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_auth_challenges_expiry ON auth_challenges(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_quota_user ON quota_ledger(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_deletion_status ON deletion_requests(status, requested_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_orders_trade_no ON orders(trade_no);
+      CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+    `);
   }
 
   private seedInitialData(): void {
     if (!this.db) return;
-
-    const initialTags: string[] = ['商业投资', '个人成长', '哲学心理', '经典策略'];
-    const initialConfig: LLMConfig = DEFAULT_LLM_CONFIG;
-
-    // Seed/sync Skills with clean production defaults (0 initial counts)
-    for (const s of INITIAL_SKILLS) {
-      const existing = this.db.prepare(`SELECT id FROM skills WHERE id = ?`).get(s.id);
+    const allSkills = [...INITIAL_SKILLS, ...INITIAL_MENTORS];
+    for (const skill of allSkills) {
+      const existing = this.db.prepare('SELECT id FROM skills WHERE id = ?').get(skill.id);
       if (!existing) {
         this.db.prepare(
           `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`
         ).run(
-          s.id,
-          s.title,
-          s.author,
-          s.description || '',
-          s.category,
-          s.coverUrl,
-          JSON.stringify(s.tags || []),
-          s.systemPrompt || '',
-          s.catalogContent || '',
-          s.bookContent || '',
-          s.tokenCount || 12000,
-          s.preferredModel || 'deepseek-chat',
-          JSON.stringify(s.sampleQuestions || []),
-          0,
-          0,
-          'book'
+          skill.id,
+          skill.title,
+          skill.author,
+          skill.description || '',
+          skill.category,
+          skill.coverUrl,
+          JSON.stringify(skill.tags || []),
+          skill.systemPrompt || '',
+          skill.catalogContent || '',
+          skill.bookContent || '',
+          skill.tokenCount || 12000,
+          skill.preferredModel || 'deepseek-chat',
+          JSON.stringify(skill.sampleQuestions || []),
+          skill.skillType || 'book'
         );
       }
     }
-
-    // Seed/sync Mentors（导师人物，skillType=mentor）
-    for (const m of INITIAL_MENTORS) {
-      const existing = this.db.prepare(`SELECT id FROM skills WHERE id = ?`).get(m.id);
-      if (!existing) {
-        this.db.prepare(
-          `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          m.id,
-          m.title,
-          m.author,
-          m.description || '',
-          m.category,
-          m.coverUrl,
-          JSON.stringify(m.tags || []),
-          m.systemPrompt || '',
-          m.catalogContent || '',
-          m.bookContent || '',
-          m.tokenCount || 12000,
-          m.preferredModel || 'deepseek-chat',
-          JSON.stringify(m.sampleQuestions || []),
-          0,
-          0,
-          'mentor'
-        );
-      }
-    }
-
-    const tagsRow = this.db.prepare(`SELECT value FROM system_config WHERE key = 'tags'`).get() as any;
+    const tagsRow = this.db.prepare("SELECT value FROM system_config WHERE key = 'tags'").get() as any;
     if (!tagsRow) {
-      this.db.prepare(`INSERT OR REPLACE INTO system_config (key, value) VALUES ('tags', ?)`).run(JSON.stringify(initialTags));
+      this.db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('tags', ?)").run(JSON.stringify(['商业投资', '个人成长', '哲学心理', '经典策略']));
     }
-
-    const configRow = this.db.prepare(`SELECT value FROM system_config WHERE key = 'llm_config'`).get() as any;
+    const configRow = this.db.prepare("SELECT value FROM system_config WHERE key = 'llm_config'").get() as any;
     if (!configRow) {
-      this.db.prepare(`INSERT OR REPLACE INTO system_config (key, value) VALUES ('llm_config', ?)`).run(JSON.stringify(initialConfig));
+      this.db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('llm_config', ?)").run(JSON.stringify(DEFAULT_LLM_CONFIG));
     }
   }
 
-  // --- User Operations (Optimized for 1000 users) ---
+  private migratePlaintextSecrets(): void {
+    if (!this.db) return;
+    const row = this.db.prepare("SELECT value FROM system_config WHERE key = 'llm_config'").get() as any;
+    if (!row?.value) return;
+    try {
+      const config = JSON.parse(row.value) as LLMConfig;
+      let changed = false;
+      const plainKey = config.apiKey || config.deepseekApiKey || '';
+      if (plainKey && !isEncryptedSecret(plainKey)) {
+        config.apiKey = encryptSecret(plainKey);
+        config.deepseekApiKey = '';
+        changed = true;
+      }
+      if (config.dailyLimits && 'guestUser' in config.dailyLimits) {
+        delete (config.dailyLimits as any).guestUser;
+        changed = true;
+      }
+      if (changed) {
+        this.db.prepare("UPDATE system_config SET value = ? WHERE key = 'llm_config'").run(JSON.stringify(config));
+      }
+    } catch (err) {
+      console.warn('LLM 配置迁移失败:', err);
+    }
+  }
+
+  private mapUserRowToProfile(row: any): UserProfile {
+    return {
+      id: row.id,
+      unionId: row.union_id || '',
+      phone: row.phone || undefined,
+      password: row.password_hash || undefined,
+      nickname: row.nickname,
+      avatar: row.avatar || '',
+      role: row.role === 'admin' ? 'admin' : 'member',
+      status: row.status || 'active',
+      membershipTier: row.membership_tier || 'free_member',
+      membershipExpiresAt: row.membership_expires_at || undefined,
+      mustChangePassword: Boolean(row.must_change_password),
+      dailyMaxChats: row.daily_max_chats ?? 10,
+      dailyUsedCount: row.daily_used_count ?? 0,
+      isAdmin: row.role === 'admin',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      lastActiveDate: row.last_active_date || undefined,
+      lastActiveMonth: row.last_active_month || undefined,
+      lastLoginAt: row.last_login_at || undefined,
+      deletedAt: row.deleted_at || undefined,
+    };
+  }
+
   public getUsers(): UserProfile[] {
     if (!this.db) return [];
-    const rows = this.db.prepare(`SELECT * FROM users ORDER BY created_at DESC`).all() as any[];
-    return rows.map((row) => this.refreshUserDailyQuota(this.mapUserRowToProfile(row)));
+    const rows = this.db.prepare('SELECT * FROM users ORDER BY created_at DESC').all() as any[];
+    return rows.map((row) => this.mapUserRowToProfile(row));
   }
 
   public getUserById(id: string): UserProfile | undefined {
     if (!this.db) return undefined;
-    const row = this.db.prepare(`SELECT * FROM users WHERE id = ? OR union_id = ?`).get(id, id) as any;
+    const row = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
     return row ? this.refreshUserDailyQuota(this.mapUserRowToProfile(row)) : undefined;
   }
 
   public getUserByPhone(phone: string): UserProfile | undefined {
     if (!this.db) return undefined;
-    const row = this.db.prepare(`SELECT * FROM users WHERE phone = ?`).get(phone) as any;
+    const row = this.db.prepare('SELECT * FROM users WHERE phone = ?').get(phone) as any;
     return row ? this.refreshUserDailyQuota(this.mapUserRowToProfile(row)) : undefined;
-  }
-
-  // 现存 usr_ 顺序 ID 的数字后缀最大值（无顺序 ID 时为 0）：供新用户 ID 按自然顺序分配
-  public getMaxUserSerial(): number {
-    if (!this.db) return 0;
-    const row = this.db
-      .prepare(`SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) AS maxSerial FROM users WHERE id GLOB 'usr_[0-9]*'`)
-      .get() as any;
-    return Number(row?.maxSerial) || 0;
   }
 
   public saveUser(user: UserProfile): UserProfile {
     if (!this.db) return user;
+    const now = new Date().toISOString();
     this.db.prepare(
-      `INSERT OR REPLACE INTO users (id, union_id, phone, password, nickname, avatar, role, membership_tier,
-        membership_expires_at, daily_max_chats, daily_used_count, guest_used_count, is_admin, last_active_date, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO users (id, union_id, phone, password_hash, nickname, avatar, role, status, membership_tier,
+        membership_expires_at, must_change_password, daily_max_chats, daily_used_count, last_active_date,
+        last_active_month, failed_login_attempts, locked_until, last_login_at, created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+        union_id=excluded.union_id, phone=excluded.phone, password_hash=excluded.password_hash,
+        nickname=excluded.nickname, avatar=excluded.avatar, role=excluded.role, status=excluded.status,
+        membership_tier=excluded.membership_tier, membership_expires_at=excluded.membership_expires_at,
+        must_change_password=excluded.must_change_password, daily_max_chats=excluded.daily_max_chats,
+        daily_used_count=excluded.daily_used_count, last_active_date=excluded.last_active_date,
+        last_active_month=excluded.last_active_month, last_login_at=excluded.last_login_at,
+        updated_at=excluded.updated_at, deleted_at=excluded.deleted_at`
     ).run(
-      user.id, user.unionId ?? null, user.phone ?? null, user.password ?? null, user.nickname, user.avatar ?? null,
-      user.role, user.membershipTier ?? 'free_member', user.membershipExpiresAt ?? null,
-      user.dailyMaxChats ?? 10, user.dailyUsedCount ?? 0, user.guestUsedCount ?? 0,
-      user.isAdmin || user.role === 'admin' ? 1 : 0, user.lastActiveDate ?? null, user.createdAt ?? null
+      user.id,
+      user.unionId || null,
+      user.phone || null,
+      user.password || null,
+      user.nickname,
+      user.avatar || null,
+      user.role,
+      user.status || 'active',
+      user.membershipTier || 'free_member',
+      user.membershipExpiresAt || null,
+      user.mustChangePassword ? 1 : 0,
+      user.dailyMaxChats ?? 10,
+      user.dailyUsedCount ?? 0,
+      user.lastActiveDate || null,
+      user.lastActiveMonth || null,
+      user.lastLoginAt || null,
+      user.createdAt || now,
+      now,
+      user.deletedAt || null
     );
-    return user;
+    return { ...user, updatedAt: now };
   }
 
-  /**
-   * Upgrades a user's membership tier and calculates/extends expiration date
-   */
-  public upgradeUserMembership(
-    userId: string,
-    tier: MembershipTier,
-    monthsCount: number = 1
-  ): UserProfile | undefined {
+  public updateUserPassword(userId: string, passwordHash: string): void {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    this.db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0, failed_login_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?').run(passwordHash, now, userId);
+  }
+
+  public recordLoginFailure(userId: string): void {
+    if (!this.db) return;
     const user = this.getUserById(userId);
-    if (!user) return undefined;
-
-    let baseDate = new Date();
-
-    // If currently active paid membership, extend from current expiry date
-    if (user.membershipExpiresAt) {
-      const currentExpiry = new Date(user.membershipExpiresAt);
-      if (!isNaN(currentExpiry.getTime()) && currentExpiry.getTime() > baseDate.getTime()) {
-        baseDate = currentExpiry;
-      }
-    }
-
-    let monthsToAdd = monthsCount;
-    if (tier === 'quarterly_member') {
-      monthsToAdd = 3;
-    } else if (tier === 'yearly_member') {
-      monthsToAdd = 12;
-    } else if (tier === 'monthly_member') {
-      monthsToAdd = 1;
-    }
-
-    const newExpiry = new Date(baseDate);
-    newExpiry.setMonth(newExpiry.getMonth() + monthsToAdd);
-
-    user.membershipTier = tier;
-    user.membershipExpiresAt = newExpiry.toISOString();
-    user.role = 'member';
-
-    // Update max chats based on tier
-    const config = this.getLLMConfig();
-    if (tier === 'monthly_member') {
-      user.dailyMaxChats = config.dailyLimits?.monthlyMember ?? 100;
-    } else if (tier === 'quarterly_member') {
-      user.dailyMaxChats = config.dailyLimits?.quarterlyMember ?? 200;
-    } else if (tier === 'yearly_member') {
-      user.dailyMaxChats = config.dailyLimits?.yearlyMember ?? 500;
-    }
-
-    return this.saveUser(user);
+    if (!user) return;
+    const attempts = this.getUserLoginState(userId).failedLoginAttempts || 0;
+    const next = attempts + 1;
+    const lockedUntil = next >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null;
+    this.db.prepare('UPDATE users SET failed_login_attempts = ?, locked_until = ?, updated_at = ? WHERE id = ?').run(next, lockedUntil, new Date().toISOString(), userId);
   }
 
-  public deleteUser(userId: string): boolean {
-    if (!this.db) return false;
-    const result = this.db.prepare(`DELETE FROM users WHERE id = ? OR union_id = ?`).run(userId, userId);
-    // 级联清理会话：usr_ 顺序号会被复用，孤儿会话将导致新用户继承被删者的聊天记录
-    // （orders 保留作运营痕迹，不含对话内容）
-    this.db.prepare(`DELETE FROM chat_sessions WHERE user_id = ?`).run(userId);
-    return result.changes > 0;
+  public recordLoginSuccess(userId: string): void {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    this.db.prepare('UPDATE users SET failed_login_attempts = 0, locked_until = NULL, last_login_at = ?, last_active_date = ?, last_active_month = ?, updated_at = ? WHERE id = ?').run(now, getTodayString(), getCurrentMonthString(), now, userId);
+  }
+
+  public isUserLocked(user: UserProfile): boolean {
+    if (!this.db || !user.id) return false;
+    const row = this.db.prepare('SELECT failed_login_attempts, locked_until FROM users WHERE id = ?').get(user.id) as any;
+    if (!row?.locked_until) return false;
+    return new Date(row.locked_until).getTime() > Date.now();
+  }
+
+  public getUserLoginState(userId: string): { failedLoginAttempts: number; lockedUntil?: string } {
+    if (!this.db) return { failedLoginAttempts: 0 };
+    const row = this.db.prepare('SELECT failed_login_attempts, locked_until FROM users WHERE id = ?').get(userId) as any;
+    return { failedLoginAttempts: row?.failed_login_attempts || 0, lockedUntil: row?.locked_until || undefined };
   }
 
   public clearAllUsers(): void {
     if (!this.db) return;
-    this.db.prepare(`DELETE FROM users`).run();
-    // 有主会话一并清理（防序号复用继承历史）；匿名游客会话（user_id 为空）不归属任何账号，保留
-    this.db.prepare(`DELETE FROM chat_sessions WHERE user_id IS NOT NULL`).run();
+    const tx = this.db.transaction(() => {
+      this.db!.prepare('DELETE FROM chat_sessions').run();
+      this.db!.prepare('DELETE FROM auth_sessions').run();
+      this.db!.prepare('DELETE FROM auth_challenges').run();
+      this.db!.prepare('DELETE FROM quota_ledger').run();
+      this.db!.prepare('DELETE FROM deletion_requests').run();
+      this.db!.prepare('DELETE FROM audit_logs').run();
+      this.db!.prepare('DELETE FROM orders').run();
+      this.db!.prepare('DELETE FROM users').run();
+    });
+    tx();
   }
 
-  // 删除历史管理员行（管理员身份已不入库，凭证走环境变量），返回删除数量
-  // id='admin' 为合成身份的虚拟 ID，一并防御性清理，杜绝脏数据行签出管理员 token
-  public removeAdminUsers(): number {
-    if (!this.db) return 0;
-    return this.db.prepare(`DELETE FROM users WHERE role = 'admin' OR is_admin = 1 OR id = 'admin'`).run().changes;
+  public dropLegacyAccountTables(): void {
+    if (!this.db) return;
+    for (const table of ['users_legacy_v1', 'chat_sessions_legacy_v1', 'orders_legacy_v1']) {
+      if (this.tableExists(table)) this.db.prepare(`DROP TABLE IF EXISTS ${table}`).run();
+    }
   }
 
-  private mapUserRowToProfile(row: any): UserProfile {
-    let tier: MembershipTier = (row.membership_tier as MembershipTier) || 'free_member';
-    if (row.role === 'guest') tier = 'guest';
+  public deleteUser(userId: string): boolean {
+    if (!this.db) return false;
+    const tx = this.db.transaction(() => {
+      this.db!.prepare('DELETE FROM chat_sessions WHERE user_id = ?').run(userId);
+      this.db!.prepare('DELETE FROM auth_sessions WHERE subject_type = ? AND subject_id = ?').run('user', userId);
+      this.db!.prepare('DELETE FROM deletion_requests WHERE user_id = ?').run(userId);
+      return this.db!.prepare('DELETE FROM users WHERE id = ?').run(userId).changes > 0;
+    });
+    return tx();
+  }
 
-    return {
-      id: row.id,
-      unionId: row.union_id || undefined,
-      phone: row.phone || undefined,
-      password: row.password || undefined,
-      nickname: row.nickname,
-      avatar: row.avatar || undefined,
-      role: row.role as any,
-      membershipTier: tier,
-      membershipExpiresAt: row.membership_expires_at || undefined,
-      dailyMaxChats: row.daily_max_chats,
-      dailyUsedCount: row.daily_used_count,
-      guestUsedCount: row.guest_used_count,
-      isAdmin: Boolean(row.is_admin),
-      lastActiveDate: row.last_active_date,
-      createdAt: row.created_at,
-    };
+  public anonymizeUser(userId: string): boolean {
+    if (!this.db) return false;
+    const anonymizedPhone = `deleted_${crypto.randomUUID()}`;
+    const tx = this.db.transaction(() => {
+      this.db!.prepare('DELETE FROM chat_sessions WHERE user_id = ?').run(userId);
+      this.db!.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE subject_type = ? AND subject_id = ?').run(new Date().toISOString(), 'user', userId);
+      this.db!.prepare('UPDATE users SET phone = ?, union_id = ?, password_hash = NULL, nickname = ?, avatar = ?, status = ?, deleted_at = ?, updated_at = ? WHERE id = ?')
+        .run(anonymizedPhone, `deleted_${crypto.randomUUID()}`, '已注销用户', '', 'deleted', new Date().toISOString(), new Date().toISOString(), userId);
+      return true;
+    });
+    return tx();
+  }
+
+  public upgradeUserMembership(userId: string, tier: MembershipTier): UserProfile | undefined {
+    const user = this.getUserById(userId);
+    if (!user) return undefined;
+    const baseDate = user.membershipExpiresAt && new Date(user.membershipExpiresAt).getTime() > Date.now()
+      ? new Date(user.membershipExpiresAt)
+      : new Date();
+    const months = tier === 'quarterly_member' ? 3 : tier === 'yearly_member' ? 12 : 1;
+    const expiry = new Date(baseDate);
+    expiry.setMonth(expiry.getMonth() + months);
+    user.membershipTier = tier;
+    user.membershipExpiresAt = expiry.toISOString();
+    user.role = 'member';
+    const config = this.getLLMConfig();
+    user.dailyMaxChats = tier === 'monthly_member' ? (config.dailyLimits?.monthlyMember ?? 100)
+      : tier === 'quarterly_member' ? (config.dailyLimits?.quarterlyMember ?? 200)
+      : tier === 'yearly_member' ? (config.dailyLimits?.yearlyMember ?? 500)
+      : (config.dailyLimits?.freeMember ?? 10);
+    return this.saveUser(user);
   }
 
   private refreshUserDailyQuota(user: UserProfile): UserProfile {
+    if (!this.db) return user;
     const today = getTodayString();
     const currentMonth = getCurrentMonthString();
     let modified = false;
-
-    // 1. Check if VIP subscription expired
-    if (user.membershipExpiresAt && user.membershipTier && user.membershipTier !== 'free_member' && user.membershipTier !== 'guest') {
+    if (user.membershipExpiresAt && user.membershipTier && user.membershipTier !== 'free_member') {
       const expDate = new Date(user.membershipExpiresAt);
       if (!isNaN(expDate.getTime()) && expDate.getTime() < Date.now()) {
         user.membershipTier = 'free_member';
-        const config = this.getLLMConfig();
-        user.dailyMaxChats = config.dailyLimits?.freeMember ?? 10;
-        // 付费配额（按月）与免费配额（按日）是两套语义：降级即重新起算，
-        // 否则月度额度已耗尽的用户在降级当天会被免费额度误拦到次日零点
+        user.dailyMaxChats = this.getLLMConfig().dailyLimits?.freeMember ?? 10;
         user.dailyUsedCount = 0;
-        user.guestUsedCount = 0;
         user.lastActiveDate = today;
+        user.lastActiveMonth = currentMonth;
         modified = true;
       }
     }
-
-    // 2. 配额周期重置：游客/普通会员按日重置（零点刷新），月/季/年度会员按月重置（进入新月份时刷新）
-    const isPaidTier =
-      user.membershipTier === 'monthly_member' ||
-      user.membershipTier === 'quarterly_member' ||
-      user.membershipTier === 'yearly_member';
-    const periodChanged = isPaidTier
-      ? !user.lastActiveDate || !user.lastActiveDate.startsWith(currentMonth)
+    const isPaid = user.membershipTier === 'monthly_member' || user.membershipTier === 'quarterly_member' || user.membershipTier === 'yearly_member';
+    const periodChanged = isPaid
+      ? user.lastActiveMonth !== currentMonth
       : user.lastActiveDate !== today;
     if (periodChanged) {
       user.lastActiveDate = today;
+      user.lastActiveMonth = currentMonth;
       user.dailyUsedCount = 0;
-      user.guestUsedCount = 0;
       modified = true;
     }
-
-    if (modified && this.db) {
-      this.db.prepare(
-        `UPDATE users SET membership_tier = ?, daily_max_chats = ?, daily_used_count = ?, guest_used_count = ?, last_active_date = ? WHERE id = ?`
-      ).run(
-        user.membershipTier,
-        user.dailyMaxChats || 10,
-        user.dailyUsedCount || 0,
-        user.guestUsedCount || 0,
-        user.lastActiveDate,
-        user.id
-      );
+    if (modified) {
+      this.db.prepare('UPDATE users SET membership_tier = ?, daily_max_chats = ?, daily_used_count = ?, last_active_date = ?, last_active_month = ?, updated_at = ? WHERE id = ?')
+        .run(user.membershipTier, user.dailyMaxChats || 10, user.dailyUsedCount || 0, user.lastActiveDate, user.lastActiveMonth, new Date().toISOString(), user.id);
     }
     return user;
   }
-
-  // --- Skills Operations (SQL-Driven) ---
   private mapSkillRow(obj: any): Skill {
     return {
       id: obj.id,
@@ -479,285 +611,405 @@ export class CommercialSQLDatabase {
 
   public getSkills(): Skill[] {
     if (!this.db) return [...INITIAL_SKILLS, ...INITIAL_MENTORS];
-    const rows = this.db.prepare(`SELECT * FROM skills ORDER BY search_count DESC, id ASC`).all() as any[];
-    if (rows.length === 0) return [...INITIAL_SKILLS, ...INITIAL_MENTORS];
-
-    return rows.map((obj) => this.mapSkillRow(obj));
+    const rows = this.db.prepare('SELECT * FROM skills ORDER BY search_count DESC, id ASC').all() as any[];
+    return rows.length ? rows.map((row) => this.mapSkillRow(row)) : [...INITIAL_SKILLS, ...INITIAL_MENTORS];
   }
 
-  // 单行查询：旧实现 getSkills().find() 每次全表加载所有书籍的完整正文并逐行
-  // JSON.parse，聊天/点击等热路径同步阻塞事件循环
   public getSkillById(id: string): Skill | undefined {
-    if (!this.db) return INITIAL_SKILLS.find((s) => s.id === id);
-    const row = this.db.prepare(`SELECT * FROM skills WHERE id = ?`).get(id) as any;
+    if (!this.db) return [...INITIAL_SKILLS, ...INITIAL_MENTORS].find((skill) => skill.id === id);
+    const row = this.db.prepare('SELECT * FROM skills WHERE id = ?').get(id) as any;
     return row ? this.mapSkillRow(row) : undefined;
   }
 
-  // 点击计数原子自增：替代「读整行→改→INSERT OR REPLACE 整行重写」（含全量正文落盘）
   public incrementSkillSearchCount(id: string): void {
-    if (!this.db) return;
-    this.db.prepare(`UPDATE skills SET search_count = search_count + 1 WHERE id = ?`).run(id);
+    this.db?.prepare('UPDATE skills SET search_count = search_count + 1 WHERE id = ?').run(id);
   }
 
   public saveSkill(skill: Skill): Skill {
     if (!this.db) return skill;
     this.db.prepare(
-      `INSERT OR REPLACE INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET title=excluded.title, author=excluded.author, description=excluded.description,
+       category=excluded.category, cover_url=excluded.cover_url, tags=excluded.tags, system_prompt=excluded.system_prompt,
+       catalog_content=excluded.catalog_content, book_content=excluded.book_content, token_count=excluded.token_count,
+       preferred_model=excluded.preferred_model, sample_questions=excluded.sample_questions, chat_count=excluded.chat_count,
+       search_count=excluded.search_count, skill_type=excluded.skill_type`
     ).run(
-      skill.id,
-      skill.title,
-      skill.author,
-      skill.description || '',
-      skill.category,
-      skill.coverUrl,
-      JSON.stringify(skill.tags || []),
-      skill.systemPrompt || '',
-      skill.catalogContent || '',
-      skill.bookContent || '',
-      skill.tokenCount || 12000,
-      skill.preferredModel || 'deepseek-chat',
-      JSON.stringify(skill.sampleQuestions || []),
-      skill.chatCount || 0,
-      skill.searchCount || 0,
-      skill.skillType || 'book'
+      skill.id, skill.title, skill.author, skill.description || '', skill.category, skill.coverUrl,
+      JSON.stringify(skill.tags || []), skill.systemPrompt || '', skill.catalogContent || '', skill.bookContent || '',
+      skill.tokenCount || 12000, skill.preferredModel || 'deepseek-chat', JSON.stringify(skill.sampleQuestions || []),
+      skill.chatCount || 0, skill.searchCount || 0, skill.skillType || 'book'
     );
     return skill;
   }
 
   public deleteSkill(id: string): boolean {
     if (!this.db) return false;
-    this.db.prepare(`DELETE FROM skills WHERE id = ?`).run(id);
-    return true;
+    return this.db.prepare('DELETE FROM skills WHERE id = ?').run(id).changes > 0;
   }
 
-  // --- Tags & Config Operations (SQL-Driven) ---
   public getTags(): string[] {
     if (!this.db) return ['商业投资', '个人成长', '哲学心理', '经典策略'];
-    const row = this.db.prepare(`SELECT value FROM system_config WHERE key = 'tags'`).get() as any;
-    if (row) {
-      try {
-        return JSON.parse(row.value);
-      } catch {}
+    const row = this.db.prepare("SELECT value FROM system_config WHERE key = 'tags'").get() as any;
+    if (row?.value) {
+      try { return JSON.parse(row.value); } catch {}
     }
     return ['商业投资', '个人成长', '哲学心理', '经典策略'];
   }
 
   public saveTags(tags: string[]): string[] {
-    if (!this.db) return tags;
-    const clean = Array.from(new Set(tags.filter((t) => typeof t === 'string' && t.trim().length > 0)));
-    this.db.prepare(`INSERT OR REPLACE INTO system_config (key, value) VALUES ('tags', ?)`).run(JSON.stringify(clean));
+    const clean = Array.from(new Set(tags.filter((tag) => typeof tag === 'string' && tag.trim()))).slice(0, 50);
+    this.db?.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('tags', ?)").run(JSON.stringify(clean));
     return clean;
   }
 
   public getLLMConfig(): LLMConfig {
-    if (!this.db) return DEFAULT_LLM_CONFIG;
-    const row = this.db.prepare(`SELECT value FROM system_config WHERE key = 'llm_config'`).get() as any;
-    if (row) {
-      try {
-        const parsed = JSON.parse(row.value);
-        return { ...DEFAULT_LLM_CONFIG, ...parsed };
-      } catch {}
+    const fallback = sanitizeLLMConfigForStorage(DEFAULT_LLM_CONFIG);
+    if (!this.db) return fallback;
+    const row = this.db.prepare("SELECT value FROM system_config WHERE key = 'llm_config'").get() as any;
+    if (!row?.value) return fallback;
+    try {
+      const stored = JSON.parse(row.value) as LLMConfig;
+      const encrypted = stored.apiKey || stored.deepseekApiKey || '';
+      return {
+        ...stored,
+        apiKey: encrypted ? decryptSecret(encrypted) : '',
+        deepseekApiKey: '',
+        apiKeyConfigured: Boolean(encrypted),
+        dailyLimits: stored.dailyLimits ? {
+          freeMember: stored.dailyLimits.freeMember,
+          monthlyMember: stored.dailyLimits.monthlyMember,
+          quarterlyMember: stored.dailyLimits.quarterlyMember,
+          yearlyMember: stored.dailyLimits.yearlyMember,
+        } : fallback.dailyLimits,
+      };
+    } catch (err) {
+      console.warn('LLM 配置读取失败:', err);
+      return fallback;
     }
-    return DEFAULT_LLM_CONFIG;
   }
 
-  public saveLLMConfig(config: LLMConfig): LLMConfig {
+  public getAdminLLMConfigView(): LLMConfig {
+    const config = this.getLLMConfig();
+    return { ...config, apiKey: undefined, apiKeyConfigured: Boolean(config.apiKey) };
+  }
+
+  public saveLLMConfig(config: LLMConfig, apiKey?: string | null): LLMConfig {
     if (!this.db) return config;
     const current = this.getLLMConfig();
-    const merged = { ...current, ...config };
-    this.db.prepare(`INSERT OR REPLACE INTO system_config (key, value) VALUES ('llm_config', ?)`).run(JSON.stringify(merged));
-    return merged;
+    const next = sanitizeLLMConfigForStorage({ ...current, ...config });
+    const key = apiKey === undefined ? current.apiKey : apiKey;
+    next.apiKey = key ? encryptSecret(key) : '';
+    next.deepseekApiKey = '';
+    delete next.apiKeyConfigured;
+    this.db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('llm_config', ?)").run(JSON.stringify(next));
+    return this.getLLMConfig();
   }
 
-  // --- Sessions & Chat Operations (SQL-Driven) ---
   public getChatSessions(userId?: string): ChatSession[] {
     if (!this.db) return [];
-    let query = `SELECT * FROM chat_sessions`;
-    const params: any[] = [];
-    if (userId) {
-      query += ` WHERE user_id = ?`;
-      params.push(userId);
-    }
-    query += ` ORDER BY updated_at DESC`;
-
-    const rows = this.db.prepare(query).all(...params) as any[];
+    const rows = (userId
+      ? this.db.prepare('SELECT * FROM chat_sessions WHERE user_id = ? ORDER BY updated_at DESC').all(userId)
+      : this.db.prepare('SELECT * FROM chat_sessions ORDER BY updated_at DESC').all()) as any[];
     return rows.map((obj) => ({
-      id: obj.id as string,
-      userId: (obj.user_id as string) || undefined,
-      skillId: obj.skill_id as string,
-      skillTitle: obj.skill_title as string,
-      skillAuthor: obj.skill_author as string,
-      skillCoverUrl: (obj.skill_cover_url as string) || undefined,
+      id: obj.id,
+      userId: obj.user_id,
+      skillId: obj.skill_id,
+      skillTitle: obj.skill_title || '',
+      skillAuthor: obj.skill_author || '',
+      skillCoverUrl: obj.skill_cover_url || '',
       messages: typeof obj.messages === 'string' ? JSON.parse(obj.messages || '[]') : obj.messages,
-      createdAt: obj.created_at as string,
-      updatedAt: obj.updated_at as string,
+      createdAt: obj.created_at,
+      updatedAt: obj.updated_at,
     }));
   }
 
-  public getChatSessionById(id: string): ChatSession | undefined {
+  public getChatSessionById(id: string, userId?: string): ChatSession | undefined {
     if (!this.db) return undefined;
-    const obj = this.db.prepare(`SELECT * FROM chat_sessions WHERE id = ?`).get(id) as any;
+    const query = userId ? 'SELECT * FROM chat_sessions WHERE id = ? AND user_id = ?' : 'SELECT * FROM chat_sessions WHERE id = ?';
+    const obj = (userId ? this.db.prepare(query).get(id, userId) : this.db.prepare(query).get(id)) as any;
     if (!obj) return undefined;
     return {
-      id: obj.id as string,
-      userId: (obj.user_id as string) || undefined,
-      skillId: obj.skill_id as string,
-      skillTitle: obj.skill_title as string,
-      skillAuthor: obj.skill_author as string,
-      skillCoverUrl: (obj.skill_cover_url as string) || undefined,
+      id: obj.id,
+      userId: obj.user_id,
+      skillId: obj.skill_id,
+      skillTitle: obj.skill_title || '',
+      skillAuthor: obj.skill_author || '',
+      skillCoverUrl: obj.skill_cover_url || '',
       messages: typeof obj.messages === 'string' ? JSON.parse(obj.messages || '[]') : obj.messages,
-      createdAt: obj.created_at as string,
-      updatedAt: obj.updated_at as string,
+      createdAt: obj.created_at,
+      updatedAt: obj.updated_at,
     };
   }
 
   public saveChatSession(session: ChatSession): ChatSession {
     if (!this.db) return session;
+    const now = new Date().toISOString();
     this.db.prepare(
-      `INSERT OR REPLACE INTO chat_sessions (id, user_id, skill_id, skill_title, skill_author, skill_cover_url, messages, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      session.id,
-      session.userId || '',
-      session.skillId,
-      session.skillTitle || '',
-      session.skillAuthor || '',
-      session.skillCoverUrl || '',
-      JSON.stringify(session.messages || []),
-      session.createdAt || new Date().toISOString(),
-      session.updatedAt || new Date().toISOString()
-    );
+      `INSERT INTO chat_sessions (id, user_id, skill_id, skill_title, skill_author, skill_cover_url, messages, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET skill_id=excluded.skill_id, skill_title=excluded.skill_title,
+       skill_author=excluded.skill_author, skill_cover_url=excluded.skill_cover_url,
+       messages=excluded.messages, updated_at=excluded.updated_at`
+    ).run(session.id, session.userId || '', session.skillId, session.skillTitle || '', session.skillAuthor || '', session.skillCoverUrl || '', JSON.stringify(session.messages || []), session.createdAt || now, session.updatedAt || now);
     return session;
   }
 
-  public deleteChatSession(sessionId: string, userId?: string): boolean {
-    if (!this.db || !userId) return false;
-    this.db.prepare(`DELETE FROM chat_sessions WHERE id = ? AND user_id = ?`).run(sessionId, userId);
-    return true;
+  public deleteChatSession(sessionId: string, userId: string): boolean {
+    if (!this.db) return false;
+    return this.db.prepare('DELETE FROM chat_sessions WHERE id = ? AND user_id = ?').run(sessionId, userId).changes > 0;
   }
 
-  // --- Commercial Orders Operations (Membership-driven) ---
+  public createAuthSession(record: Omit<AuthSessionRecord, 'id' | 'createdAt' | 'lastSeenAt'>): AuthSessionRecord {
+    if (!this.db) throw new Error('数据库未初始化');
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const created: AuthSessionRecord = { id, ...record, createdAt: now, lastSeenAt: now };
+    this.db.prepare(
+      `INSERT INTO auth_sessions (id, token_hash, subject_type, subject_id, role, csrf_hash, auth_version, expires_at, last_seen_at, created_at, revoked_at, ip, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+    ).run(id, record.tokenHash, record.subjectType, record.subjectId, record.role, record.csrfHash, record.authVersion || null, record.expiresAt, now, now, record.ip || null, record.userAgent || null);
+    return created;
+  }
+
+  public getAuthSessionByTokenHash(tokenHash: string): AuthSessionRecord | undefined {
+    if (!this.db) return undefined;
+    const row = this.db.prepare('SELECT * FROM auth_sessions WHERE token_hash = ? AND revoked_at IS NULL').get(tokenHash) as any;
+    return row ? this.mapAuthSessionRow(row) : undefined;
+  }
+
+  public touchAuthSession(id: string, expiresAt: string): void {
+    this.db?.prepare('UPDATE auth_sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?').run(new Date().toISOString(), expiresAt, id);
+  }
+
+  public revokeAuthSession(id: string): void {
+    this.db?.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+  }
+
+  public revokeUserSessions(userId: string): void {
+    this.db?.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE subject_type = ? AND subject_id = ?').run(new Date().toISOString(), 'user', userId);
+  }
+
+  public revokeAdminSessions(): void {
+    this.db?.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE subject_type = ?').run(new Date().toISOString(), 'admin');
+  }
+
+  public deleteExpiredAuthSessions(): void {
+    if (!this.db) return;
+    const now = new Date().toISOString();
+    this.db.prepare('DELETE FROM auth_sessions WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)').run(now, new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+    this.db.prepare('DELETE FROM auth_challenges WHERE expires_at < ?').run(now);
+  }
+
+  private mapAuthSessionRow(row: any): AuthSessionRecord {
+    return {
+      id: row.id,
+      tokenHash: row.token_hash,
+      subjectType: row.subject_type,
+      subjectId: row.subject_id,
+      role: row.role,
+      csrfHash: row.csrf_hash,
+      authVersion: row.auth_version || undefined,
+      expiresAt: row.expires_at,
+      lastSeenAt: row.last_seen_at,
+      createdAt: row.created_at,
+      revokedAt: row.revoked_at || undefined,
+      ip: row.ip || undefined,
+      userAgent: row.user_agent || undefined,
+    };
+  }
+
+  public createAuthChallenge(record: { tokenHash: string; type: string; subjectId: string; payload?: string; expiresAt: string }): string {
+    if (!this.db) throw new Error('数据库未初始化');
+    const id = crypto.randomUUID();
+    this.db.prepare('INSERT INTO auth_challenges (id, token_hash, type, subject_id, payload, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(id, record.tokenHash, record.type, record.subjectId, record.payload || '{}', record.expiresAt, new Date().toISOString());
+    return id;
+  }
+
+  public getAuthChallengeByTokenHash(tokenHash: string, type: string): { id: string; tokenHash: string; type: string; subjectId: string; payload: string; expiresAt: string; usedAt?: string } | undefined {
+    if (!this.db) return undefined;
+    const row = this.db.prepare('SELECT * FROM auth_challenges WHERE token_hash = ? AND type = ?').get(tokenHash, type) as any;
+    if (!row) return undefined;
+    return { id: row.id, tokenHash: row.token_hash, type: row.type, subjectId: row.subject_id, payload: row.payload || '{}', expiresAt: row.expires_at, usedAt: row.used_at || undefined };
+  }
+
+  public markAuthChallengeUsed(id: string): void {
+    this.db?.prepare('UPDATE auth_challenges SET used_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+  }
+
+  public getAdminSecurity(): AdminSecurityRecord | undefined {
+    if (!this.db) return undefined;
+    const row = this.db.prepare("SELECT * FROM admin_security WHERE id = 'primary'").get() as any;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      totpSecretEnc: row.totp_secret_enc || undefined,
+      totpEnabled: Boolean(row.totp_enabled),
+      recoveryCodeHashes: JSON.parse(row.recovery_code_hashes || '[]'),
+      pendingSecretEnc: row.pending_secret_enc || undefined,
+      pendingRecoveryHashes: JSON.parse(row.pending_recovery_hashes || '[]'),
+      authVersion: row.auth_version || undefined,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  public saveAdminSecurity(record: AdminSecurityRecord): void {
+    this.db?.prepare(
+      `INSERT INTO admin_security (id, totp_secret_enc, totp_enabled, recovery_code_hashes, pending_secret_enc, pending_recovery_hashes, auth_version, updated_at)
+       VALUES ('primary', ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET totp_secret_enc=excluded.totp_secret_enc, totp_enabled=excluded.totp_enabled,
+       recovery_code_hashes=excluded.recovery_code_hashes, pending_secret_enc=excluded.pending_secret_enc,
+       pending_recovery_hashes=excluded.pending_recovery_hashes, auth_version=excluded.auth_version, updated_at=excluded.updated_at`
+    ).run(record.totpSecretEnc || null, record.totpEnabled ? 1 : 0, JSON.stringify(record.recoveryCodeHashes || []), record.pendingSecretEnc || null, JSON.stringify(record.pendingRecoveryHashes || []), record.authVersion || null, record.updatedAt);
+  }
+
+  public createDeletionRequest(request: DeletionRequest): DeletionRequest {
+    if (!this.db) return request;
+    this.db.prepare('INSERT INTO deletion_requests (id, user_id, status, requested_at, reviewed_at, reviewed_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(request.id, request.userId, request.status, request.requestedAt, request.reviewedAt || null, request.reviewedBy || null, request.reason || null);
+    return request;
+  }
+
+  public getDeletionRequestByUser(userId: string): DeletionRequest | undefined {
+    if (!this.db) return undefined;
+    const row = this.db.prepare('SELECT * FROM deletion_requests WHERE user_id = ? ORDER BY requested_at DESC LIMIT 1').get(userId) as any;
+    return row ? this.mapDeletionRequest(row) : undefined;
+  }
+
+  public getDeletionRequests(status?: string): DeletionRequest[] {
+    if (!this.db) return [];
+    const rows = status
+      ? this.db.prepare('SELECT * FROM deletion_requests WHERE status = ? ORDER BY requested_at DESC').all(status)
+      : this.db.prepare('SELECT * FROM deletion_requests ORDER BY requested_at DESC').all();
+    return (rows as any[]).map((row) => this.mapDeletionRequest(row));
+  }
+
+  public updateDeletionRequest(id: string, status: DeletionRequest['status'], reviewedBy: string, reason?: string): void {
+    this.db?.prepare('UPDATE deletion_requests SET status = ?, reviewed_at = ?, reviewed_by = ?, reason = ? WHERE id = ?').run(status, new Date().toISOString(), reviewedBy, reason || null, id);
+  }
+
+  private mapDeletionRequest(row: any): DeletionRequest {
+    return { id: row.id, userId: row.user_id, status: row.status, requestedAt: row.requested_at, reviewedAt: row.reviewed_at || undefined, reviewedBy: row.reviewed_by || undefined, reason: row.reason || undefined };
+  }
+
+  public audit(entry: { actorType: string; actorId?: string; action: string; targetType?: string; targetId?: string; metadata?: Record<string, unknown>; ip?: string; userAgent?: string }): void {
+    this.db?.prepare('INSERT INTO audit_logs (id, actor_type, actor_id, action, target_type, target_id, metadata, ip, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(crypto.randomUUID(), entry.actorType, entry.actorId || null, entry.action, entry.targetType || null, entry.targetId || null, JSON.stringify(entry.metadata || {}), entry.ip || null, entry.userAgent || null, new Date().toISOString());
+  }
+
+  public exportUserData(userId: string): Record<string, unknown> | undefined {
+    const user = this.getUserById(userId);
+    if (!user) return undefined;
+    const { password: _password, ...safeUser } = user;
+    return {
+      exportedAt: new Date().toISOString(),
+      user: safeUser,
+      sessions: this.getChatSessions(userId),
+      deletionRequest: this.getDeletionRequestByUser(userId) || null,
+    };
+  }
+
+  public reserveQuota(userId: string, limit: number, requestId: string): { allowed: boolean; ledgerId?: string } {
+    if (!this.db) return { allowed: false };
+    const tx = this.db.transaction(() => {
+      const user = this.getUserById(userId);
+      if (!user) return { allowed: false };
+      const used = user.dailyUsedCount || 0;
+      if (used >= limit) return { allowed: false };
+      const id = crypto.randomUUID();
+      this.db!.prepare('UPDATE users SET daily_used_count = daily_used_count + 1, last_active_date = ?, last_active_month = ?, updated_at = ? WHERE id = ?').run(getTodayString(), getCurrentMonthString(), new Date().toISOString(), userId);
+      this.db!.prepare('INSERT INTO quota_ledger (id, user_id, request_id, period_key, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, userId, requestId, user.membershipTier === 'free_member' ? getTodayString() : getCurrentMonthString(), 'reserved', new Date().toISOString());
+      return { allowed: true, ledgerId: id };
+    });
+    return tx();
+  }
+
+  public settleQuota(ledgerId: string, status: 'consumed' | 'refunded'): void {
+    if (!this.db) return;
+    const tx = this.db.transaction(() => {
+      const row = this.db!.prepare('SELECT user_id, status FROM quota_ledger WHERE id = ?').get(ledgerId) as any;
+      if (!row || row.status !== 'reserved') return;
+      if (status === 'refunded') {
+        this.db!.prepare('UPDATE users SET daily_used_count = MAX(0, daily_used_count - 1), updated_at = ? WHERE id = ?').run(new Date().toISOString(), row.user_id);
+      }
+      this.db!.prepare('UPDATE quota_ledger SET status = ?, settled_at = ? WHERE id = ?').run(status, new Date().toISOString(), ledgerId);
+    });
+    tx();
+  }
+
   public getOrders(userId?: string): OrderLog[] {
     if (!this.db) return [];
-    let query = `SELECT * FROM orders`;
+    let query = 'SELECT * FROM orders';
     const params: any[] = [];
-    if (userId) {
-      query += ` WHERE user_id = ?`;
-      params.push(userId);
-    }
-    query += ` ORDER BY created_at DESC`;
-
+    if (userId) { query += ' WHERE user_id = ?'; params.push(userId); }
+    query += ' ORDER BY created_at DESC';
     const rows = this.db.prepare(query).all(...params) as any[];
-    return rows.map((obj) => ({
-      id: obj.id as string,
-      tradeNo: obj.trade_no as string,
-      userId: obj.user_id as string,
-      unionId: (obj.union_id as string) || undefined,
-      skillId: (obj.skill_id as string) || undefined,
-      skillTitle: (obj.skill_title as string) || undefined,
-      planType: (obj.plan_type as any) || 'monthly',
-      planName: (obj.plan_name as string) || '月度会员',
-      amount: Number(obj.amount),
-      type: (obj.type as any) || 'membership',
-      paymentMethod: obj.payment_method as any,
-      status: obj.status as any,
-      paidAt: (obj.paid_at as string) || undefined,
-      createdAt: obj.created_at as string,
+    return rows.map((row) => ({
+      id: row.id, tradeNo: row.trade_no, userId: row.user_id, unionId: row.union_id || undefined,
+      skillId: row.skill_id || undefined, skillTitle: row.skill_title || undefined, planType: row.plan_type || 'monthly',
+      planName: row.plan_name || '月度会员', amount: Number(row.amount), type: row.type || 'membership',
+      paymentMethod: row.payment_method || 'wechat', status: row.status || 'pending', paidAt: row.paid_at || undefined,
+      createdAt: row.created_at,
     }));
   }
 
   public clearAllOrders(): void {
-    if (!this.db) return;
-    this.db.prepare(`DELETE FROM orders`).run();
+    this.db?.prepare('DELETE FROM orders').run();
   }
 
-  // --- Admin Stats (Multi-tier breakdown) ---
   public getAdminStats() {
     const users = this.getUsers();
     const skills = this.getSkills();
     const orders = this.getOrders();
     const sessions = this.getChatSessions();
-
-    const totalRevenue = orders
-      .filter((o) => o.status === 'success')
-      .reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
-
-    const totalPaidOrders = orders.filter((o) => o.status === 'success').length;
-
-    let totalMessages = 0;
-    sessions.forEach((s) => {
-      totalMessages += (s.messages || []).length;
-    });
-
-    const tierCounts = {
-      guest: 0,
-      free_member: 0,
-      monthly_member: 0,
-      quarterly_member: 0,
-      yearly_member: 0,
-    };
-
+    const totalRevenue = orders.filter((order) => order.status === 'success').reduce((sum, order) => sum + (Number(order.amount) || 0), 0);
+    const tierCounts = { free_member: 0, monthly_member: 0, quarterly_member: 0, yearly_member: 0 } as Record<string, number>;
     let activeVipUsers = 0;
     const today = getTodayString();
     let todayActiveUsers = 0;
-    // 近 14 天日期桶（本地时区，旧→新），用于新增用户/互动次数趋势
     const days = lastNDays(14);
-    const dayIndex = new Map(days.map((d, i) => [d, i]));
+    const dayIndex = new Map(days.map((day, index) => [day, index]));
     const dailyNewUsers = days.map((date) => ({ date, count: 0 }));
     const dailyMessages = days.map((date) => ({ date, count: 0 }));
-    const cutoff7d = localDateNDaysAgo(6); // 含今日共 7 天
-    const cutoff30d = localDateNDaysAgo(29);
     let newUsersToday = 0;
     let newUsers7d = 0;
     let activeUsers7d = 0;
     let activeUsers30d = 0;
+    const cutoff7d = localDateNDaysAgo(6);
+    const cutoff30d = localDateNDaysAgo(29);
+    let totalMessages = 0;
+    let todaySessions = 0;
+    let todayMessages = 0;
 
-    users.forEach((u) => {
-      const tier = getEffectiveMembershipTier(u);
-      if (tierCounts[tier] !== undefined) {
-        tierCounts[tier]++;
-      }
-      if (tier === 'monthly_member' || tier === 'quarterly_member' || tier === 'yearly_member') {
-        activeVipUsers++;
-      }
-      if (u.lastActiveDate === today) {
-        todayActiveUsers++;
-      }
-      // lastActiveDate 与本地日期串同为 YYYY-MM-DD，可直接按字典序比较
-      if (u.lastActiveDate && u.lastActiveDate >= cutoff7d) {
-        activeUsers7d++;
-      }
-      if (u.lastActiveDate && u.lastActiveDate >= cutoff30d) {
-        activeUsers30d++;
-      }
-      const createdDate = toLocalDateString(u.createdAt);
+    users.forEach((user) => {
+      const tier = getEffectiveMembershipTier(user);
+      tierCounts[tier] = (tierCounts[tier] || 0) + 1;
+      if (tier !== 'free_member') activeVipUsers++;
+      if (user.lastActiveDate === today) todayActiveUsers++;
+      if (user.lastActiveDate && user.lastActiveDate >= cutoff7d) activeUsers7d++;
+      if (user.lastActiveDate && user.lastActiveDate >= cutoff30d) activeUsers30d++;
+      const createdDate = toLocalDateString(user.createdAt);
       if (createdDate) {
         if (createdDate === today) newUsersToday++;
         if (createdDate >= cutoff7d) newUsers7d++;
-        const idx = dayIndex.get(createdDate);
-        if (idx !== undefined) dailyNewUsers[idx].count++;
+        const index = dayIndex.get(createdDate);
+        if (index !== undefined) dailyNewUsers[index].count++;
       }
     });
 
-    // 今日新会话与消息按日聚合（消息 timestamp 为 ISO UTC 串，统一转本地日期）
-    let todaySessions = 0;
-    let todayMessages = 0;
-    sessions.forEach((s) => {
-      if (toLocalDateString(s.createdAt) === today) todaySessions++;
-      (s.messages || []).forEach((m) => {
-        const mDate = toLocalDateString(m.timestamp);
-        if (mDate === today) todayMessages++;
-        const idx = mDate ? dayIndex.get(mDate) : undefined;
-        if (idx !== undefined) dailyMessages[idx].count++;
+    sessions.forEach((session) => {
+      totalMessages += (session.messages || []).length;
+      if (toLocalDateString(session.createdAt) === today) todaySessions++;
+      (session.messages || []).forEach((message) => {
+        const date = toLocalDateString(message.timestamp);
+        if (date === today) todayMessages++;
+        const index = date ? dayIndex.get(date) : undefined;
+        if (index !== undefined) dailyMessages[index].count++;
       });
     });
-
-    // 热门书籍 TOP5（按浏览热度 searchCount）
-    const topSkills = [...skills]
-      .sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0))
-      .slice(0, 5)
-      .map((s) => ({ id: s.id, title: s.title, searchCount: s.searchCount || 0 }));
 
     return {
       totalUsers: users.length,
@@ -771,9 +1023,9 @@ export class CommercialSQLDatabase {
       dailyMessages,
       tierCounts,
       totalSkills: skills.length,
-      topSkills,
+      topSkills: [...skills].sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0)).slice(0, 5).map((skill) => ({ id: skill.id, title: skill.title, searchCount: skill.searchCount || 0 })),
       totalOrders: orders.length,
-      totalPaidOrders,
+      totalPaidOrders: orders.filter((order) => order.status === 'success').length,
       totalRevenue: Number(totalRevenue.toFixed(2)),
       totalChatSessions: sessions.length,
       todaySessions,

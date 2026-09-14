@@ -1,16 +1,21 @@
 import { Express } from 'express';
 import { db } from '../db.js';
+import { ADMIN_PASSWORD_MIN_LENGTH, USER_PASSWORD_MIN_LENGTH } from '../services/password.js';
 
-// 公开配置端点：仅暴露前端启动所需的非敏感配置，绝不返回 apiKey / apiBaseUrl
 export function registerConfigRoutes(app: Express): void {
-  app.get('/api/config/public', (req, res) => {
-    const c = db.getLLMConfig();
+  app.get('/api/config/public', (_req, res) => {
+    const config = db.getLLMConfig();
     res.json({
       llmConfig: {
-        timeoutSec: c.timeoutSec,
-        dailyLimits: c.dailyLimits,
-        membershipPlans: c.membershipPlans,
-        agreements: c.agreements,
+        timeoutSec: config.timeoutSec,
+        dailyLimits: config.dailyLimits,
+        membershipPlans: config.membershipPlans,
+        agreements: config.agreements,
+      },
+      authPolicy: {
+        userMinLength: USER_PASSWORD_MIN_LENGTH,
+        adminMinLength: ADMIN_PASSWORD_MIN_LENGTH,
+        registrationEnabled: false,
       },
     });
   });

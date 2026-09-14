@@ -1,14 +1,14 @@
-export type UserRole = 'guest' | 'member' | 'admin';
+export type UserRole = 'member' | 'admin';
 
 export type MembershipTier =
-  | 'guest'
   | 'free_member'
   | 'monthly_member'
   | 'quarterly_member'
   | 'yearly_member';
 
+export type UserStatus = 'active' | 'disabled' | 'deletion_pending' | 'deleted';
+
 export interface DailyLimitsConfig {
-  guestUser?: number;
   freeMember?: number;
   monthlyMember?: number;
   quarterlyMember?: number;
@@ -29,17 +29,19 @@ export interface UserProfile {
   nickname: string;
   avatar: string;
   role: UserRole;
+  status?: UserStatus;
   membershipTier?: MembershipTier;
-  membershipExpiresAt?: string; // ISO string for paid VIP expiration
+  membershipExpiresAt?: string;
+  mustChangePassword?: boolean;
   dailyMaxChats?: number;
   dailyUsedCount?: number;
-  monthlyUsedCount?: number;
-  guestUsedCount?: number;
   isAdmin?: boolean;
   createdAt?: string;
+  updatedAt?: string;
   lastActiveDate?: string;
   lastActiveMonth?: string;
-  token?: string;
+  lastLoginAt?: string;
+  deletedAt?: string;
 }
 
 export type SkillType = 'book' | 'mentor';
@@ -61,9 +63,24 @@ export interface Skill {
   searchCount?: number;
   hotScore?: number;
   sampleQuestions?: string[];
-  /** 技能类型：book（书籍蒸馏）或 mentor（导师人物），缺失视为 book */
   skillType?: SkillType;
 }
+
+export type PublicSkill = Pick<
+  Skill,
+  | 'id'
+  | 'title'
+  | 'author'
+  | 'category'
+  | 'coverUrl'
+  | 'description'
+  | 'tags'
+  | 'chatCount'
+  | 'searchCount'
+  | 'hotScore'
+  | 'sampleQuestions'
+  | 'skillType'
+>;
 
 export interface ChatMessage {
   id: string;
@@ -88,9 +105,12 @@ export interface ChatSession {
   messages: ChatMessage[];
 }
 
+export type PublicChatSession = Omit<ChatSession, 'userId'>;
+
 export interface LLMConfig {
   apiBaseUrl?: string;
   apiKey?: string;
+  apiKeyConfigured?: boolean;
   primaryModel: string;
   timeoutSec: number;
   maxTokens?: number;
@@ -98,6 +118,24 @@ export interface LLMConfig {
   dailyLimits?: DailyLimitsConfig;
   membershipPlans?: MembershipPlanConfig;
   agreements?: LegalAgreements;
+}
+
+export type DeletionRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
+
+export interface DeletionRequest {
+  id: string;
+  userId: string;
+  status: DeletionRequestStatus;
+  requestedAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reason?: string;
+}
+
+export interface AuthPolicy {
+  userMinLength: number;
+  adminMinLength: number;
+  registrationEnabled: boolean;
 }
 
 export interface LegalAgreements {
@@ -108,6 +146,32 @@ export interface LegalAgreements {
   updatedAt?: string;
 }
 
+export interface AuthSessionRecord {
+  id: string;
+  tokenHash: string;
+  subjectType: 'user' | 'admin';
+  subjectId: string;
+  role: UserRole;
+  csrfHash: string;
+  authVersion?: string;
+  expiresAt: string;
+  lastSeenAt: string;
+  createdAt: string;
+  revokedAt?: string;
+  ip?: string;
+  userAgent?: string;
+}
+
+export interface AdminSecurityRecord {
+  id: string;
+  totpSecretEnc?: string;
+  totpEnabled: boolean;
+  recoveryCodeHashes: string[];
+  pendingSecretEnc?: string;
+  pendingRecoveryHashes: string[];
+  authVersion?: string;
+  updatedAt: string;
+}
 export type OrderPlanType = 'monthly' | 'quarterly' | 'yearly';
 
 export interface OrderLog {
@@ -138,7 +202,6 @@ export function formatBookTitle(title: string = ''): string {
 
 export function formatUserDisplayName(nickname?: string): string {
   if (!nickname) return '普通会员';
-  if (nickname === '游客用户' || nickname === '游客') return '游客';
   if (/^\d{11}$/.test(nickname)) {
     return nickname.slice(-4);
   }
@@ -184,7 +247,7 @@ export function formatMessageTimestamp(raw?: string): string {
 }
 
 export function getEffectiveMembershipTier(user?: UserProfile | null): MembershipTier {
-  if (!user || user.role === 'guest' || user.membershipTier === 'guest') return 'guest';
+  if (!user || user.status === 'deleted') return 'free_member';
   const tier = user.membershipTier || 'free_member';
   if (tier === 'free_member') return tier;
 
@@ -199,8 +262,6 @@ export function getEffectiveMembershipTier(user?: UserProfile | null): Membershi
 
 export function getMembershipTierLabel(tier?: MembershipTier): string {
   switch (tier) {
-    case 'guest':
-      return '游客';
     case 'free_member':
       return '普通会员';
     case 'monthly_member':

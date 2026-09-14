@@ -12,7 +12,7 @@ import {
   getEffectiveMembershipTier,
   getMembershipTierLabel,
 } from '../types';
-import { loadGuestUser, rememberGuestCount } from '../lib/guestQuota';
+import { apiFetch } from '../lib/apiFetch';
 import { BookDetailModal } from './BookDetailModal';
 import { MembershipModal } from './MembershipModal';
 import { MarkdownMessage } from './MarkdownMessage';
@@ -112,13 +112,9 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   useEffect(() => {
     cancelOngoingGeneration();
 
-    if (user.id && user.role !== 'guest') {
-      const token = localStorage.getItem('auth_token');
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      fetch(`/api/chat/sessions?userId=${user.id}`, { headers })
-        .then((res) => res.json())
+    if (user) {
+      fetch('/api/chat/sessions', { credentials: 'include' })
+        .then((res) => (res.ok ? res.json() : { sessions: [] }))
         .then((data) => {
           if (Array.isArray(data.sessions)) {
             setSessions(data.sessions);
@@ -141,7 +137,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     return () => {
       cancelOngoingGeneration();
     };
-  }, [user.id, user.role, cancelOngoingGeneration]);
+  }, [user?.id, user?.role, cancelOngoingGeneration]);
 
   // Category filter & search state for Market view
   const [selectedCategory, setSelectedCategory] = useState<string>('全部');
@@ -329,56 +325,25 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
   // Quota Computations
   const effectiveTier = getEffectiveMembershipTier(user);
-  const memberBadgeText = getMembershipTierLabel(effectiveTier);
-  const memberBadgeClass =
-    user.role === 'guest'
-      ? 'bg-gray-100 text-gray-500'
-      : 'bg-[#f4efe6] text-[#8c6227] font-medium';
-
-  const limits = llmConfig?.dailyLimits || {
-    guestUser: 3,
-    freeMember: 10,
-    monthlyMember: 100,
-    quarterlyMember: 200,
-    yearlyMember: 500,
-  };
-
+  const memberBadgeText = user ? getMembershipTierLabel(effectiveTier) : '未登录';
+  const memberBadgeClass = user ? 'bg-[#f4efe6] text-[#8c6227] font-medium' : 'bg-gray-100 text-gray-500';
+  const limits = llmConfig?.dailyLimits || { freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 };
   const currentQuotaLimit = React.useMemo(() => {
+    if (!user) return 0;
     if (user.role === 'admin' || user.isAdmin) return 9999;
     switch (effectiveTier) {
-      case 'yearly_member':
-        return limits.yearlyMember ?? 500;
-      case 'quarterly_member':
-        return limits.quarterlyMember ?? 200;
-      case 'monthly_member':
-        return limits.monthlyMember ?? 100;
-      case 'free_member':
-        return limits.freeMember ?? 10;
-      case 'guest':
-      default:
-        return limits.guestUser ?? 3;
+      case 'yearly_member': return limits.yearlyMember ?? 500;
+      case 'quarterly_member': return limits.quarterlyMember ?? 200;
+      case 'monthly_member': return limits.monthlyMember ?? 100;
+      default: return limits.freeMember ?? 10;
     }
-  }, [effectiveTier, user.role, user.isAdmin, limits]);
-
-  const currentQuotaUsed =
-    user.role === 'guest'
-      ? user.guestUsedCount || 0
-      : user.dailyUsedCount || 0;
-
-  // 额度周期：月/季/年度会员按月计算，游客/普通会员按日计算
-  const isMonthlyQuota =
-    effectiveTier === 'monthly_member' ||
-    effectiveTier === 'quarterly_member' ||
-    effectiveTier === 'yearly_member';
+  }, [effectiveTier, user, limits]);
+  const currentQuotaUsed = user?.dailyUsedCount || 0;
+  const isMonthlyQuota = effectiveTier === 'monthly_member' || effectiveTier === 'quarterly_member' || effectiveTier === 'yearly_member';
 
   // Handle deleting a session
   const handleDeleteSession = (sessionId: string) => {
-    const token = localStorage.getItem('auth_token');
-    const headers: Record<string, string> = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-
-    const url = `/api/chat/sessions/${sessionId}${user?.id ? `?userId=${encodeURIComponent(user.id)}` : ''}`;
-    fetch(url, { method: 'DELETE', headers }).catch((e) =>
+    apiFetch(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' }).catch((e) =>
       console.warn('Delete session error:', e)
     );
     setSessions((prev) => {
@@ -397,6 +362,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
   // Handle "新建对话" button click
   const handleCreateNewChat = () => {
+    if (!user) { onOpenLogin(); return; }
     const currentSkillToUse = activeSkill || skills[0];
     const initialQuestions = currentSkillToUse.sampleQuestions && currentSkillToUse.sampleQuestions.length > 0
       ? currentSkillToUse.sampleQuestions
@@ -404,7 +370,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
     const newSession: ChatSession = {
       id: `session-${currentSkillToUse.id}-${Date.now()}`,
-      userId: user.id,
       skillId: currentSkillToUse.id,
       skillTitle: currentSkillToUse.title,
       skillAuthor: currentSkillToUse.author,
@@ -440,11 +405,12 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       );
     }
 
-    fetch(`/api/skills/${skill.id}/click`, { method: 'POST' }).catch((err) =>
+    apiFetch(`/api/skills/${skill.id}/click`, { method: 'POST' }).catch((err) =>
       console.warn('Failed to sync skill heat click:', err)
     );
 
     setSelectedSkill({ ...skill, searchCount: (skill.searchCount || 0) + 1 });
+    if (!user) { onOpenLogin(); return; }
 
     const existing = sessions.find((s) => s.skillId === skill.id);
     if (existing) {
@@ -456,7 +422,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
       const newSession: ChatSession = {
         id: `session-${skill.id}-${Date.now()}`,
-        userId: user.id,
         skillId: skill.id,
         skillTitle: skill.title,
         skillAuthor: skill.author,
@@ -550,70 +515,72 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     }
   }, [activeSession?.messages, currentStreamingText, mainView]);
 
-  // Auto-generate recommended questions via LLM if active skill has systemPrompt but no sampleQuestions
-  useEffect(() => {
-    if (!activeSkill || !activeSkill.systemPrompt) return;
-    if (Array.isArray(activeSkill.sampleQuestions) && activeSkill.sampleQuestions.length > 0) return;
+  const handleChangePassword = async () => {
+    const currentPassword = window.prompt('请输入当前密码');
+    if (!currentPassword) return;
+    const newPassword = window.prompt('请输入新密码（至少 12 位，包含字母和数字）');
+    if (!newPassword) return;
+    const confirmation = window.prompt('请再次输入新密码');
+    if (newPassword !== confirmation) { showToast('两次输入的新密码不一致'); return; }
+    try {
+      const response = await apiFetch('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword, newPassword }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || '修改失败');
+      showToast('密码已修改，其他设备已退出登录', 'success');
+    } catch (error: any) {
+      showToast(error?.message || '修改失败');
+    }
+  };
 
-    let isMounted = true;
-    const fetchQuestions = async () => {
-      try {
-        const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (token) headers['Authorization'] = `Bearer ${token}`;
+  const handleExportData = async () => {
+    try {
+      const response = await apiFetch('/api/account/export');
+      if (!response.ok) throw new Error('导出失败');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `remix-account-${user?.id || 'data'}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      showToast('个人数据已导出', 'success');
+    } catch (error: any) {
+      showToast(error?.message || '导出失败');
+    }
+  };
 
-        const res = await fetch('/api/skills/generate-questions', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            systemPrompt: activeSkill.systemPrompt,
-            title: activeSkill.title,
-            author: activeSkill.author,
-            skillId: activeSkill.id,
-          }),
-        });
-        const data = await res.json();
-        if (isMounted && data.success && Array.isArray(data.questions) && data.questions.length > 0) {
-          const qs: string[] = data.questions;
-          if (setSkills) {
-            setSkills((prev) =>
-              prev.map((s) => (s.id === activeSkill.id ? { ...s, sampleQuestions: qs } : s))
-            );
-          }
-          setSelectedSkill({ ...activeSkill, sampleQuestions: qs });
-          // Also update session initial message if it was using placeholder
-          setSessions((prev) =>
-            prev.map((sess) => {
-              if (sess.skillId === activeSkill.id && sess.messages.length > 0) {
-                const firstMsg = sess.messages[0];
-                if (!firstMsg.recommendedQuestions || firstMsg.recommendedQuestions.length === 0) {
-                  const updatedFirst = { ...firstMsg, recommendedQuestions: qs };
-                  return { ...sess, messages: [updatedFirst, ...sess.messages.slice(1)] };
-                }
-              }
-              return sess;
-            })
-          );
-        }
-      } catch (err) {
-        console.warn('Background question generation error:', err);
-      }
-    };
+  const handleRequestDeletion = async () => {
+    if (!window.confirm('确认提交账号注销申请？提交后不能继续对话，7 天内可撤销。')) return;
+    try {
+      const response = await apiFetch('/api/account/deletion-request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || '提交失败');
+      setUser((prev) => prev ? { ...prev, status: 'deletion_pending' } : prev);
+      showToast('注销申请已提交', 'success');
+    } catch (error: any) {
+      showToast(error?.message || '提交失败');
+    }
+  };
 
-    fetchQuestions();
-    return () => {
-      isMounted = false;
-    };
-  }, [activeSkill?.id, activeSkill?.systemPrompt]);
+  const handleCancelDeletion = async () => {
+    try {
+      const response = await apiFetch('/api/account/deletion-request', { method: 'DELETE' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || '撤销失败');
+      setUser((prev) => prev ? { ...prev, status: 'active' } : prev);
+      showToast('注销申请已撤销', 'success');
+    } catch (error: any) {
+      showToast(error?.message || '撤销失败');
+    }
+  };
 
   const handleLogout = async () => {
     try {
-      localStorage.removeItem('auth_token');
-      await fetch('/api/auth/logout', { method: 'POST' });
+      await apiFetch('/api/auth/logout', { method: 'POST' });
     } catch (e) {
       console.warn('Logout API error:', e);
     }
-    setUser(loadGuestUser());
+    setUser(null);
     setSessions([]);
     setActiveSessionId(null);
     setMainView('market');
@@ -621,57 +588,20 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   };
 
   const checkQuotaAndCanProceed = (): boolean => {
+    if (!user) { onOpenLogin(); return false; }
     if (user.role === 'admin' || user.isAdmin) return true;
-
-    // 1. Guest user (未登录游客)
-    if (effectiveTier === 'guest') {
-      const guestLimit = limits.guestUser ?? 3;
-      if ((user.guestUsedCount || 0) >= guestLimit) {
-        showToast(`您当前还未注册登录，今日体验额度${guestLimit}次已用完（每日零点刷新），请登录后继续体验。`, 'warning');
-        return false;
-      }
-      return true;
-    }
-
-    // 2. Member (普通会员 / VIP会员)
     const used = user.dailyUsedCount || 0;
     if (used >= currentQuotaLimit) {
-      if (effectiveTier === 'free_member') {
-        showToast(`今日普通会员免费额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)，每日零点自动刷新，开通VIP会员可享更高调用额度。`, 'info');
-      } else {
-        showToast(`您本月${memberBadgeText}对话额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)，每月1号零点自动刷新。`, 'info');
-      }
+      showToast(effectiveTier === 'free_member'
+        ? `今日普通会员免费额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)，每日零点自动刷新。`
+        : `本期${memberBadgeText}对话额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)。`, 'info');
       return false;
     }
     return true;
   };
 
-  const consumeQuota = () => {
-    if (user.role === 'guest') {
-      // 游客额度按日计算：当日已用次数持久化，刷新页面不清零，跨天自动归零
-      rememberGuestCount((user.guestUsedCount || 0) + 1);
-      setUser((prev) => ({
-        ...prev,
-        guestUsedCount: (prev.guestUsedCount || 0) + 1,
-      }));
-    } else {
-      setUser((prev) => ({
-        ...prev,
-        dailyUsedCount: (prev.dailyUsedCount || 0) + 1,
-      }));
-    }
-  };
-
-  // 失败回滚：请求未成功时把游客额度恢复到本次尝试前（闭包中的 user 即调用前快照）。
-  // 游客计数纯本地持久化，不回滚则一次网络失败就永久烧掉当日一次额度
-  const rollbackGuestQuota = () => {
-    if (user.role !== 'guest') return;
-    rememberGuestCount(user.guestUsedCount || 0);
-    setUser((prev) => ({
-      ...prev,
-      guestUsedCount: Math.max(0, (prev.guestUsedCount || 0) - 1),
-    }));
-  };
+  const consumeQuota = () => {};
+  const rollbackGuestQuota = () => {};
 
   const handleSendMessage = async (overrideText?: string) => {
     const textToSend = overrideText || inputText;
@@ -721,32 +651,21 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    const token = localStorage.getItem('auth_token');
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-
     try {
-      const response = await fetch('/api/chat/stream', {
+      const response = await apiFetch('/api/chat/stream', {
         method: 'POST',
-        headers,
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         signal: abortController.signal,
-        body: JSON.stringify({
-          sessionId: targetSessionId,
-          skillId: activeSkill.id,
-          messageText: textToSend,
-          userId: user.id,
-        }),
+        body: JSON.stringify({ sessionId: targetSessionId, skillId: activeSkill.id, messageText: textToSend }),
       });
 
       if (!response.ok) {
         if (onRefreshUser) onRefreshUser();
         const errJson = await response.json().catch(() => ({}));
         if (response.status === 401) {
-          showToast(errJson.message || '游客今日体验额度已用完，请登录会员账号继续。', 'warning');
+          showToast(errJson.message || '请先登录后使用 AI 对话', 'warning');
+          onTriggerLogin401();
         } else if (response.status === 402 || response.status === 403 || response.status === 429) {
           showToast(errJson.message || '对话额度已用完，请稍后再试。', 'info');
         }
@@ -787,17 +706,12 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               streamError = String(data.error);
             }
             if (data.user) {
-              // 游客态服务端无记录，跳过同步以免清零本地当日计数；管理员载荷主前端一律不呈现
-              setUser((prev) =>
-                prev.role === 'guest' || data.user.role === 'admin' || data.user.isAdmin ? prev : data.user
-              );
+              if (!data.user.isAdmin && data.user.role !== 'admin') setUser(data.user);
             }
             if (data.done) {
               finalizedMsg = data.assistantMessage;
               if (data.user) {
-                setUser((prev) =>
-                  prev.role === 'guest' || data.user.role === 'admin' || data.user.isAdmin ? prev : data.user
-                );
+                if (!data.user.isAdmin && data.user.role !== 'admin') setUser(data.user);
               }
             }
           } catch {
@@ -808,7 +722,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
       if (abortController.signal.aborted) return;
 
-      // 服务端明确报错（上游 LLM 不可用等）：走统一失败路径（回滚游客额度 + 服务提示气泡）
+      // 服务端明确报错（上游 LLM 不可用等）：走统一失败路径
       if (streamError) throw new Error(streamError);
 
       if (thinkingTimerRef.current) {
@@ -845,8 +759,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       if (err?.name === 'AbortError' || abortController.signal.aborted) {
         return;
       }
-      // 非用户主动停止的失败（网络错误/服务端拒绝/流中断）：回滚预扣的游客额度
-      rollbackGuestQuota();
+      // 非用户主动停止的失败：保持服务端配额账本为准
       console.warn('SSE stream error:', err);
       if (thinkingTimerRef.current) {
         clearInterval(thinkingTimerRef.current);
@@ -961,7 +874,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           <div className="relative">
             <button
               onClick={() => {
-                if (user.role === 'guest') {
+                if (!user) {
                   onOpenLogin();
                 } else {
                   const nextState = !isUserMenuOpen;
@@ -974,10 +887,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white hover:bg-gray-50 transition-all cursor-pointer border border-gray-300 shadow-2xs"
             >
               <div className="flex items-center gap-1.5 text-xs font-medium text-[#2c221e]">
-                {user.role === 'guest' ? (
+                {!user ? (
                   <>
                     <User className="w-3.5 h-3.5 text-gray-400" />
-                    <span>登录 / 注册</span>
+                    <span>登录</span>
                   </>
                 ) : (
                   <>
@@ -988,7 +901,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               </div>
             </button>
 
-            {isUserMenuOpen && (
+            {isUserMenuOpen && user && (
               <>
                 <div
                   className="fixed inset-0 z-40"
@@ -1003,7 +916,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                           {formatUserDisplayName(user.nickname)}
                         </div>
                         <div className="text-[11px] text-gray-400 font-mono mt-0.5">
-                          ID: {user.id ? user.id.replace(/^usr_/, '') : 'guest'}
+                          ID: {user.id.replace(/^usr_/, '')}
                         </div>
                       </div>
                       <div className="flex flex-col items-end gap-0.5 shrink-0">
@@ -1041,7 +954,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                   </div>
 
                   <div className="space-y-1.5 pt-0.5">
-                    {user.role === 'guest' ? (
+                    {!user ? (
                       <button
                         onClick={() => {
                           setIsUserMenuOpen(false);
@@ -1049,7 +962,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         }}
                         className="w-full py-2 bg-[#f4efe6] hover:bg-[#eae1d0] text-[#2c221e] border border-[#ded3be] rounded-xl text-xs font-bold text-center transition-all cursor-pointer shadow-2xs"
                       >
-                        <span>登录 / 注册</span>
+                        <span>登录</span>
                       </button>
                     ) : (
                       <>
@@ -1064,6 +977,33 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                           <Crown className="w-3.5 h-3.5 text-[#8c6227]" />
                           会员订阅
                         </button>
+                        <button
+                          onClick={handleChangePassword}
+                          className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200"
+                        >
+                          修改密码
+                        </button>
+                        <button
+                          onClick={handleExportData}
+                          className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200"
+                        >
+                          导出个人数据
+                        </button>
+                        {user.status === 'deletion_pending' ? (
+                          <button
+                            onClick={handleCancelDeletion}
+                            className="w-full py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-emerald-200"
+                          >
+                            撤销注销申请
+                          </button>
+                        ) : (
+                          <button
+                            onClick={handleRequestDeletion}
+                            className="w-full py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-rose-200"
+                          >
+                            申请注销账号
+                          </button>
+                        )}
                         <button
                           onClick={handleLogout}
                           className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200 flex items-center justify-center gap-1.5"
@@ -1313,7 +1253,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                           }`}
                         >
                           <span className="font-semibold text-gray-700">
-                            {isUser ? formatUserDisplayName(user.nickname) : activeSkill?.title}
+                            {isUser ? formatUserDisplayName(user?.nickname) : activeSkill?.title}
                           </span>
                           <span>·</span>
                           <span>{formatMessageTimestamp(msg.timestamp)}</span>
