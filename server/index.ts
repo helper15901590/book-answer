@@ -38,4 +38,8 @@ async function startServer() {
   }
 }
 
-startServer();
+startServer().catch((error) => {
+  logger.fatal({ err: error }, '服务启动失败');
+  Sentry.captureException(error);
+  process.exit(1);
+});
