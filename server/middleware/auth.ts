@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { NextFunction, Request, Response } from 'express';
 import { db } from '../db.js';
 import { AuthSessionRecord, UserProfile } from '../../src/types.js';
@@ -8,6 +7,7 @@ import {
   ADMIN_SESSION_TTL_MS,
   ADMIN_PASSWORD,
   ADMIN_PHONE,
+  ADMIN_SECOND_PASSWORD,
   APP_ORIGIN,
   COOKIE_SECURE,
   USER_CSRF_COOKIE,
@@ -48,7 +48,8 @@ export function sanitizeUser(user: UserProfile): UserProfile {
 
 export function getAdminAuthVersion(): string {
   const security = db.getAdminSecurity();
-  return sha256(`${ADMIN_PHONE}:${ADMIN_PASSWORD}:${security?.totpSecretEnc || ''}`);
+  // 安全码也纳入版本：轮换安全码后必须让已签发的管理员会话失效
+  return sha256(`${ADMIN_PHONE}:${ADMIN_PASSWORD}:${ADMIN_SECOND_PASSWORD}:${security?.totpSecretEnc || ''}`);
 }
 
 function readCookie(req: Request, name: string): string | undefined {
@@ -162,16 +163,6 @@ export function requireUser(req: AuthRequest, res: Response, next: NextFunction)
   next();
 }
 
-export function requireActiveUser(req: AuthRequest, res: Response, next: NextFunction): void {
-  requireUser(req, res, () => {
-    if (req.user?.status !== 'active') {
-      res.status(403).json({ error: 'ACCOUNT_RESTRICTED', message: '账号当前处于注销流程中，暂不能发起对话' });
-      return;
-    }
-    next();
-  });
-}
-
 export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction): void {
   if (!req.user || req.sessionKind !== 'admin' || req.user.role !== 'admin') {
     res.status(403).json({ error: 'FORBIDDEN', message: '需要管理员权限' });
@@ -185,7 +176,11 @@ export function csrfProtection(req: AuthRequest, res: Response, next: NextFuncti
     next();
     return;
   }
-  const exempt = ['/api/auth/login', '/api/auth/change-password', '/api/admin/login'].some((path) => req.path === path) || req.path.startsWith('/api/admin/mfa/');
+  // 本中间件挂在 /api 之下，req.path 是不含挂载前缀的相对路径，必须拼回 baseUrl 才能与完整路径比较。
+  // 此前直接拿 req.path 比对导致豁免从未生效：未登录时靠"无会话即放行"侥幸通过，
+  // 而浏览器仍持有管理员会话时，前台登录会带上该会话被要求 CSRF 令牌，前端报「安全令牌无效」。
+  const routePath = `${req.baseUrl}${req.path}`;
+  const exempt = ['/api/auth/login', '/api/auth/change-password', '/api/admin/login'].some((path) => routePath === path) || routePath.startsWith('/api/admin/mfa/');
   if (exempt) {
     next();
     return;
@@ -214,8 +209,4 @@ export function csrfProtection(req: AuthRequest, res: Response, next: NextFuncti
 export function issueChallengeToken(): { token: string; tokenHash: string; csrfToken: string } {
   const token = randomToken();
   return { token, tokenHash: sha256(token), csrfToken: randomToken(24) };
-}
-
-export function randomPublicUserId(): string {
-  return `usr_${crypto.randomUUID()}`;
 }

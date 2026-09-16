@@ -24,16 +24,23 @@ async function startServer() {
   db.deleteExpiredAuthSessions();
   setInterval(() => db.deleteExpiredAuthSessions(), 60 * 60 * 1000).unref();
   const server = app.listen(PORT, '0.0.0.0', () => {
-    logger.info({ port: PORT }, 'Remix production server started');
+    logger.info({ port: PORT }, 'book_answer production server started');
   });
   for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     process.on(sig, () => {
       logger.info({ signal: sig }, '开始优雅关闭');
+      // 先断开空闲的 keep-alive 连接，否则 server.close 的回调可能一直不触发
+      server.closeIdleConnections();
       server.close(() => {
         db.close();
         process.exit(0);
       });
-      setTimeout(() => process.exit(1), 10_000).unref();
+      // 仍有活跃连接（如进行中的 SSE 流式对话）时，宽限 8 秒后强制收尾；
+      // 主动停止服务属正常退出，不用非零退出码，免得 docker 把它记成故障
+      setTimeout(() => {
+        db.close();
+        process.exit(0);
+      }, 8_000).unref();
     });
   }
 }

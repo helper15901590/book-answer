@@ -10,7 +10,7 @@ function readCookie(name: string): string {
 }
 
 export function csrfCookieName(): string {
-  return isAdminPage() ? 'remix_admin_csrf' : 'remix_user_csrf';
+  return isAdminPage() ? 'book_answer_admin_csrf' : 'book_answer_user_csrf';
 }
 
 export function authHeaders(extra?: Record<string, string>): Record<string, string> {

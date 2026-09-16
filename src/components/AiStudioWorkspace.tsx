@@ -10,22 +10,24 @@ import {
   formatUserDisplayName,
   formatMessageTimestamp,
   getEffectiveMembershipTier,
-  getMembershipTierLabel,
+  tierDailyLimit,
+  ALL_CATEGORIES,
 } from '../types';
 import { apiFetch } from '../lib/apiFetch';
+import { copyText } from '../lib/clipboard';
+import { useI18n, membershipTierKey, formatBookTitleByLocale, serverMessage } from '../i18n';
 import { BookDetailModal } from './BookDetailModal';
 import { MembershipModal } from './MembershipModal';
 import { MarkdownMessage } from './MarkdownMessage';
+import { LanguageSwitcher } from './LanguageSwitcher';
 import MarketSection from './MarketSection';
 import {
-  Search,
   Send,
-  LayoutGrid,
+  Book,
   Copy,
   Check,
   X,
   ChevronRight,
-  ChevronDown,
   Sparkles,
   LogOut,
   Trash2,
@@ -50,6 +52,17 @@ interface AiStudioWorkspaceProps {
   onTriggerLogin401: () => void;
 }
 
+// 导师广场图标：博士帽 + 人像。lucide 无此图标，按同一规格自绘
+//（24×24 视窗、2px 描边、圆角端点与连接），保证与其余图标风格一致。
+const MentorPlazaIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="m12 2.5 7 3-7 3-7-3z" />
+    <path d="M19 5.5v3" />
+    <circle cx="12" cy="11.6" r="3.1" />
+    <path d="M18.6 21v-1.4a3.8 3.8 0 0 0-3.8-3.8H9.2a3.8 3.8 0 0 0-3.8 3.8V21" />
+  </svg>
+);
+
 export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   skills,
   setSkills,
@@ -62,6 +75,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   onOpenLogin,
   onTriggerLogin401,
 }) => {
+  const { t, locale } = useI18n();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
@@ -75,7 +89,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   const [currentStreamingText, setCurrentStreamingText] = useState('');
   const [thinkingSeconds, setThinkingSeconds] = useState<number>(0);
   const thinkingTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const streamingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -98,10 +111,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     if (thinkingTimerRef.current) {
       clearInterval(thinkingTimerRef.current);
       thinkingTimerRef.current = null;
-    }
-    if (streamingIntervalRef.current) {
-      clearInterval(streamingIntervalRef.current);
-      streamingIntervalRef.current = null;
     }
     setIsGenerating(false);
     setGeneratingSessionId(null);
@@ -140,7 +149,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   }, [user?.id, user?.role, cancelOngoingGeneration]);
 
   // Category filter & search state for Market view
-  const [selectedCategory, setSelectedCategory] = useState<string>('全部');
+  const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES);
   const [marketSearch, setMarketSearch] = useState('');
   const [catChangeVersion, setCatChangeVersion] = useState(0);
 
@@ -153,7 +162,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   }, [selectedCategory, marketSearch]);
 
   // --- 导师广场独立状态（与书籍广场对称） ---
-  const [mentorSelectedCategory, setMentorSelectedCategory] = useState<string>('全部');
+  const [mentorSelectedCategory, setMentorSelectedCategory] = useState<string>(ALL_CATEGORIES);
   const [mentorSearch, setMentorSearch] = useState('');
   const [mentorVisibleCardCount, setMentorVisibleCardCount] = useState<number>(PAGE_SIZE);
   const mentorTagsContainerRef = useRef<HTMLDivElement>(null);
@@ -237,7 +246,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     }
 
     return {
-      categories: ['全部', ...activeCategories],
+      categories: [ALL_CATEGORIES, ...activeCategories],
       renamedCategoriesMap: renamedMap,
       deletedCategoriesSet: new Set(deletedCats),
     };
@@ -248,7 +257,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   const [detailSkill, setDetailSkill] = useState<Skill | null>(null);
 
   const otherCategories = React.useMemo(() => {
-    return categories.filter((cat) => cat !== '全部');
+    return categories.filter((cat) => cat !== ALL_CATEGORIES);
   }, [categories]);
 
   const [maxVisibleCategories, setMaxVisibleCategories] = useState<number>(otherCategories.length);
@@ -325,19 +334,13 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
   // Quota Computations
   const effectiveTier = getEffectiveMembershipTier(user);
-  const memberBadgeText = user ? getMembershipTierLabel(effectiveTier) : '未登录';
+  const memberBadgeText = user ? t(membershipTierKey(effectiveTier)) : t('tier.notLoggedIn');
   const memberBadgeClass = user ? 'bg-[#f4efe6] text-[#8c6227] font-medium' : 'bg-gray-100 text-gray-500';
-  const limits = llmConfig?.dailyLimits || { freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 };
   const currentQuotaLimit = React.useMemo(() => {
     if (!user) return 0;
     if (user.role === 'admin' || user.isAdmin) return 9999;
-    switch (effectiveTier) {
-      case 'yearly_member': return limits.yearlyMember ?? 500;
-      case 'quarterly_member': return limits.quarterlyMember ?? 200;
-      case 'monthly_member': return limits.monthlyMember ?? 100;
-      default: return limits.freeMember ?? 10;
-    }
-  }, [effectiveTier, user, limits]);
+    return tierDailyLimit(llmConfig, effectiveTier);
+  }, [effectiveTier, user, llmConfig]);
   const currentQuotaUsed = user?.dailyUsedCount || 0;
   const isMonthlyQuota = effectiveTier === 'monthly_member' || effectiveTier === 'quarterly_member' || effectiveTier === 'yearly_member';
 
@@ -375,15 +378,15 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       skillAuthor: currentSkillToUse.author,
       skillCoverUrl: currentSkillToUse.coverUrl,
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      updatedAt: new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
       messages: [
         {
           id: `init-msg-${Date.now()}`,
           role: 'assistant',
           content: currentSkillToUse.skillType === 'mentor'
-            ? `你好！我是【${currentSkillToUse.author}】AI思想导师。\n\n已为你开启全新的对话页面。你可以随时提出你关注的问题。`
-            : `你好！我是${formatBookTitle(currentSkillToUse.title)}的 AI 原著导师。\n\n已为你开启全新的对话页面。你可以随时提出你关注的问题。`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            ? t('workspace.welcomeMentorNew', { author: currentSkillToUse.author })
+            : t('workspace.welcomeBookNew', { title: formatBookTitleByLocale(currentSkillToUse.title, locale) }),
+          timestamp: new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
           recommendedQuestions: initialQuestions,
         },
       ],
@@ -427,15 +430,15 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         skillAuthor: skill.author,
         skillCoverUrl: skill.coverUrl,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        updatedAt: new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
         messages: [
           {
             id: `init-msg-${Date.now()}`,
             role: 'assistant',
             content: skill.skillType === 'mentor'
-              ? `你好！我是【${skill.author}】AI思想导师。\n\n你可以随时向我提出关于其核心思想、决策智慧的问题，或探讨如何在实际场景中应用。`
-              : `你好！我是${formatBookTitle(skill.title)}的 AI 原著导师。\n\n你可以随时向我提出关于本书核心观点、逻辑框架的问题，或探讨如何在实际场景中应用。`,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              ? t('workspace.welcomeMentor', { author: skill.author })
+              : t('workspace.welcomeBook', { title: formatBookTitleByLocale(skill.title, locale) }),
+            timestamp: new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
             recommendedQuestions: initialQuestions,
           },
         ],
@@ -461,51 +464,40 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         );
         if (combined.length >= 3) {
           return [
-            `如何理解原著中提出的“${combined[0]}”？它在实际场景中如何应用？`,
-            `原著中关于“${combined[1]}”的核心逻辑是什么？如何避免常见误区？`,
-            `如何将“${combined[2]}”与日常决策或行动相结合？`,
+            t('workspace.qConcept1', { term: combined[0] }),
+            t('workspace.qConcept2', { term: combined[1] }),
+            t('workspace.qConcept3', { term: combined[2] }),
           ];
         }
       }
       if (skill?.id === 'skill-santi') {
-        return [
-          '如何在高度内卷的存量商业竞争中，构建自己的“面壁计划”？',
-          '从“降维打击”视角看，传统行业如何应对AI新物种的颠覆？',
-          '在职场中遇到非对称博弈与猜疑链时，该如何破局？',
-        ];
+        return [t('workspace.qSanti1'), t('workspace.qSanti2'), t('workspace.qSanti3')];
       }
       if (skill?.id === 'skill-charlie') {
-        return [
-          '面对重大的投资与择业选择，如何用逆向思维进行压力测试？',
-          '如何快速建立一套属于我自己的“多元思维模型格栅”？',
-          '请帮我剖析常见的认知偏差，如何在决策时避免“铁锤人综合征”？',
-        ];
+        return [t('workspace.qCharlie1'), t('workspace.qCharlie2'), t('workspace.qCharlie3')];
       }
       if (skill?.id === 'skill-naval') {
-        return [
-          '普通人如何找到自己独一无二的“专长”并将其商业化？',
-          '在AI时代，如何利用代码和媒体建立无许可的杠杆？',
-          '如何平衡高强度的事业追求与内心的长久宁静？',
-        ];
+        return [t('workspace.qNaval1'), t('workspace.qNaval2'), t('workspace.qNaval3')];
       }
       return [
-        `结合${formatBookTitle(skill?.title || '本书')}的导师定位，核心底层逻辑是什么？`,
-        `原著中解决核心矛盾最具启发性的思维模型是什么？`,
-        `结合实际工作与生活场景，第一步落地实践方案是什么？`,
+        t('workspace.qGeneric1', { title: formatBookTitleByLocale(skill?.title || t('workspace.defaultBookTitle'), locale) }),
+        t('workspace.qGeneric2'),
+        t('workspace.qGeneric3'),
       ];
     }
 
     const q = userQuery.trim();
-    const bookTitle = skill ? formatBookTitle(skill.title) : '本书';
-    const cleanTerm = q
-      .replace(/如何|怎么|在|中|运用|表达|实现|处理|关于|解决|请问|探讨|分析|理解|吗|呢|？|\?|思考|看待/g, '')
-      .trim();
-    const shortTerm = cleanTerm.slice(0, 12) || '这个核心议题';
+    const bookTitle = skill ? formatBookTitleByLocale(skill.title, locale) : t('workspace.defaultBookTitle');
+    // 中文分词规则只对中文输入有意义，其他语言下直接使用原文前若干字符
+    const cleanTerm = locale === 'en'
+      ? q
+      : q.replace(/如何|怎么|在|中|运用|表达|实现|处理|关于|解决|请问|探讨|分析|理解|吗|呢|？|\?|思考|看待/g, '').trim();
+    const shortTerm = cleanTerm.slice(0, 12) || t('workspace.defaultTopic');
 
     return [
-      `关于“${shortTerm}”，在具体落地时最容易被忽略的细节是什么？`,
-      `结合${bookTitle}的核心逻辑，能否给我提供一个可操作的练习方案？`,
-      `如果在此基础上更深入，下一个最值得探索的关联议题是什么？`,
+      t('workspace.qFollowUp1', { term: shortTerm }),
+      t('workspace.qFollowUp2', { title: bookTitle }),
+      t('workspace.qFollowUp3'),
     ];
   };
 
@@ -515,63 +507,12 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     }
   }, [activeSession?.messages, currentStreamingText, mainView]);
 
-  const handleChangePassword = async () => {
-    const currentPassword = window.prompt('请输入当前密码');
-    if (!currentPassword) return;
-    const newPassword = window.prompt('请输入新密码（至少 12 位，包含字母和数字）');
-    if (!newPassword) return;
-    const confirmation = window.prompt('请再次输入新密码');
-    if (newPassword !== confirmation) { showToast('两次输入的新密码不一致'); return; }
-    try {
-      const response = await apiFetch('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword, newPassword }) });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.message || '修改失败');
-      showToast('密码已修改，其他设备已退出登录', 'success');
-    } catch (error: any) {
-      showToast(error?.message || '修改失败');
-    }
-  };
-
-  const handleExportData = async () => {
-    try {
-      const response = await apiFetch('/api/account/export');
-      if (!response.ok) throw new Error('导出失败');
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `remix-account-${user?.id || 'data'}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-      showToast('个人数据已导出', 'success');
-    } catch (error: any) {
-      showToast(error?.message || '导出失败');
-    }
-  };
-
-  const handleRequestDeletion = async () => {
-    if (!window.confirm('确认提交账号注销申请？提交后不能继续对话，7 天内可撤销。')) return;
-    try {
-      const response = await apiFetch('/api/account/deletion-request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.message || '提交失败');
-      setUser((prev) => prev ? { ...prev, status: 'deletion_pending' } : prev);
-      showToast('注销申请已提交', 'success');
-    } catch (error: any) {
-      showToast(error?.message || '提交失败');
-    }
-  };
-
-  const handleCancelDeletion = async () => {
-    try {
-      const response = await apiFetch('/api/account/deletion-request', { method: 'DELETE' });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.message || '撤销失败');
-      setUser((prev) => prev ? { ...prev, status: 'active' } : prev);
-      showToast('注销申请已撤销', 'success');
-    } catch (error: any) {
-      showToast(error?.message || '撤销失败');
-    }
+  // 隐藏功能：在个人菜单的用户 ID 上点右键即可复制完整 ID，不放置可见按钮
+  const handleCopyUserId = async (event: React.MouseEvent) => {
+    event.preventDefault();
+    if (!user) return;
+    const copied = await copyText(user.id);
+    showToast(copied ? t('workspace.userIdCopied', { id: user.id }) : t('workspace.copyFailed'), copied ? 'success' : 'warning');
   };
 
   const handleLogout = async () => {
@@ -593,24 +534,20 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     const used = user.dailyUsedCount || 0;
     if (used >= currentQuotaLimit) {
       showToast(effectiveTier === 'free_member'
-        ? `今日普通会员免费额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)，每日零点自动刷新。`
-        : `本期${memberBadgeText}对话额度已达上限 (${currentQuotaLimit}/${currentQuotaLimit}次)。`, 'info');
+        ? t('workspace.quotaFreeReached', { limit: currentQuotaLimit })
+        : t('workspace.quotaTierReached', { tier: memberBadgeText, limit: currentQuotaLimit }), 'info');
       return false;
     }
     return true;
   };
-
-  const consumeQuota = () => {};
-  const rollbackGuestQuota = () => {};
 
   const handleSendMessage = async (overrideText?: string) => {
     const textToSend = overrideText || inputText;
     if (!textToSend.trim() || isGenerating || !activeSession || !activeSkill) return;
 
     if (!checkQuotaAndCanProceed()) return;
-    consumeQuota();
 
-    const nowFormatted = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const nowFormatted = new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
 
     const userMsg: ChatMessage = {
       id: 'usr-' + Date.now(),
@@ -664,10 +601,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         if (onRefreshUser) onRefreshUser();
         const errJson = await response.json().catch(() => ({}));
         if (response.status === 401) {
-          showToast(errJson.message || '请先登录后使用 AI 对话', 'warning');
+          showToast(serverMessage(errJson, t, 'workspace.loginRequired'), 'warning');
           onTriggerLogin401();
         } else if (response.status === 402 || response.status === 403 || response.status === 429) {
-          showToast(errJson.message || '对话额度已用完，请稍后再试。', 'info');
+          showToast(serverMessage(errJson, t, 'workspace.quotaExhausted'), 'info');
         }
         throw new Error(errJson.message || errJson.error || `HTTP ${response.status}`);
       }
@@ -703,7 +640,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               setCurrentStreamingText(accumulatedText);
             }
             if (data.error) {
-              streamError = String(data.error);
+              // SSE 错误帧回传的是错误码，需按当前语言翻译后再展示
+              streamError = serverMessage({ error: String(data.error) }, t, 'server.AI_UNAVAILABLE');
             }
             if (data.user) {
               if (!data.user.isAdmin && data.user.role !== 'admin') setUser(data.user);
@@ -738,8 +676,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       const aiMsg: ChatMessage = finalizedMsg || {
         id: 'ai-' + Date.now(),
         role: 'assistant',
-        content: accumulatedText || '已为您分析完毕。',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: accumulatedText || t('workspace.analysisDone'),
+        timestamp: new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
         thinkingTime: finalThinkingTime,
       };
 
@@ -772,8 +710,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       const errorMsg: ChatMessage = {
         id: 'ai-err-' + Date.now(),
         role: 'assistant',
-        content: `[服务提示] ${err?.message || '网络连接中断，请重试'}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        content: t('workspace.serviceNotice', { message: err?.message || t('workspace.networkInterrupted') }),
+        timestamp: new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
       };
 
       setSessions((prev) =>
@@ -790,8 +728,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     }
   };
 
-  const handleCopyText = (id: string, text: string) => {
-    navigator.clipboard.writeText(text);
+  const handleCopyText = async (id: string, text: string) => {
+    // 走统一封装：HTTP 直连（非安全上下文）下 navigator.clipboard 不存在，需要回退方案；
+    // 否则复制会失败却仍然显示「已复制」，比不提示更糟
+    if (!(await copyText(text))) return showToast(t('workspace.copyFailed'), 'warning');
     setCopiedMsgId(id);
     setTimeout(() => setCopiedMsgId(null), 2000);
   };
@@ -804,7 +744,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     .filter((skill) => {
       const mappedCategory = renamedCategoriesMap[skill.category] || skill.category;
       const matchesCategory =
-        selectedCategory === '全部' ||
+        selectedCategory === ALL_CATEGORIES ||
         mappedCategory === selectedCategory ||
         skill.category === selectedCategory ||
         skill.tags?.some((t) => (renamedCategoriesMap[t] || t) === selectedCategory);
@@ -834,7 +774,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     .filter((skill) => {
       const mappedCategory = renamedCategoriesMap[skill.category] || skill.category;
       const matchesCategory =
-        mentorSelectedCategory === '全部' ||
+        mentorSelectedCategory === ALL_CATEGORIES ||
         mappedCategory === mentorSelectedCategory ||
         skill.category === mentorSelectedCategory ||
         skill.tags?.some((t) => (renamedCategoriesMap[t] || t) === mentorSelectedCategory);
@@ -866,11 +806,12 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
             className="flex items-center gap-2 cursor-pointer"
             onClick={() => setMainView('market')}
           >
-            <span className="font-serif font-bold text-lg text-gray-900 tracking-tight">问书</span>
+            <span className="font-serif font-bold text-lg text-gray-900 tracking-tight">{t('brand.name')}</span>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
+          <LanguageSwitcher />
           <div className="relative">
             <button
               onClick={() => {
@@ -890,7 +831,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                 {!user ? (
                   <>
                     <User className="w-3.5 h-3.5 text-gray-400" />
-                    <span>登录</span>
+                    <span>{t('workspace.login')}</span>
                   </>
                 ) : (
                   <>
@@ -915,7 +856,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         <div className="text-xs font-bold text-gray-900 truncate">
                           {formatUserDisplayName(user.nickname)}
                         </div>
-                        <div className="text-[11px] text-gray-400 font-mono mt-0.5">
+                        <div onContextMenu={handleCopyUserId} className="text-[11px] text-gray-400 font-mono mt-0.5">
                           ID: {user.id.replace(/^usr_/, '')}
                         </div>
                       </div>
@@ -925,10 +866,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         </span>
                         <span className="text-[11px] text-gray-400 font-mono font-normal">
                           {user.membershipExpiresAt
-                            ? new Date(user.membershipExpiresAt).toLocaleDateString('zh-CN').replace(/\//g, '-')
+                            ? new Date(user.membershipExpiresAt).toLocaleDateString(locale).replace(/\//g, '-')
                             : (effectiveTier === 'yearly_member' || effectiveTier === 'quarterly_member' || effectiveTier === 'monthly_member'
-                                ? '2027-9-4'
-                                : '永久有效')}
+                                ? '—'
+                                : t('workspace.permanent'))}
                         </span>
                       </div>
                     </div>
@@ -937,10 +878,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                   {/* Quota Stats */}
                   <div className="space-y-1.5 px-0.5 py-1">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-600 font-medium">{isMonthlyQuota ? '本月调用额度' : '今日调用额度'}</span>
+                      <span className="text-slate-600 font-medium">{isMonthlyQuota ? t('workspace.quotaMonthly') : t('workspace.quotaDaily')}</span>
                       <span className="font-mono font-semibold text-slate-800">
                         {currentQuotaUsed} / {currentQuotaLimit}{' '}
-                        <span className="text-[11px] text-gray-400 font-mono font-normal">{isMonthlyQuota ? '次/月' : '次/日'}</span>
+                        <span className="text-[11px] text-gray-400 font-mono font-normal">{isMonthlyQuota ? t('workspace.perMonth') : t('workspace.perDay')}</span>
                       </span>
                     </div>
                     <div className="w-full bg-gray-100 border border-gray-200/60 rounded-full h-1.5 overflow-hidden">
@@ -962,7 +903,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         }}
                         className="w-full py-2 bg-[#f4efe6] hover:bg-[#eae1d0] text-[#2c221e] border border-[#ded3be] rounded-xl text-xs font-bold text-center transition-all cursor-pointer shadow-2xs"
                       >
-                        <span>登录</span>
+                        <span>{t('workspace.login')}</span>
                       </button>
                     ) : (
                       <>
@@ -977,33 +918,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                           <Crown className="w-3.5 h-3.5 text-[#8c6227]" />
                           会员订阅
                         </button>
-                        <button
-                          onClick={handleChangePassword}
-                          className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200"
-                        >
-                          修改密码
-                        </button>
-                        <button
-                          onClick={handleExportData}
-                          className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200"
-                        >
-                          导出个人数据
-                        </button>
-                        {user.status === 'deletion_pending' ? (
-                          <button
-                            onClick={handleCancelDeletion}
-                            className="w-full py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-emerald-200"
-                          >
-                            撤销注销申请
-                          </button>
-                        ) : (
-                          <button
-                            onClick={handleRequestDeletion}
-                            className="w-full py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-rose-200"
-                          >
-                            申请注销账号
-                          </button>
-                        )}
                         <button
                           onClick={handleLogout}
                           className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200 flex items-center justify-center gap-1.5"
@@ -1037,8 +951,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               }`}
             >
               <div className="flex items-center gap-2">
-                <LayoutGrid className="w-4 h-4 text-gray-700" />
-                <span>书籍广场</span>
+                <Book className="w-4 h-4 text-gray-700" />
+                <span>{t('workspace.bookPlaza')}</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
@@ -1053,8 +967,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               }`}
             >
               <div className="flex items-center gap-2">
-                <Brain className="w-4 h-4 text-gray-700" />
-                <span>导师广场</span>
+                <MentorPlazaIcon className="w-4 h-4 text-gray-700" />
+                <span>{t('workspace.mentorPlaza')}</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
@@ -1065,13 +979,13 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           {/* Middle Scrollable Section: Sessions List */}
           <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
             <div className="px-2 py-1 text-[11px] font-mono font-semibold text-gray-400 uppercase tracking-wider flex items-center justify-between">
-              <span>对话列表</span>
+              <span>{t('workspace.sessionList')}</span>
               <span className="text-[11px]">{sessions.length}</span>
             </div>
 
             {sessions.length === 0 ? (
               <div className="p-6 text-center text-xs text-gray-400">
-                <p>暂无对话记录</p>
+                <p>{t('workspace.noSessions')}</p>
               </div>
             ) : (
               sessions.map((session) => {
@@ -1119,7 +1033,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         >
                           <span className="truncate">{(() => {
                             const s = skills.find((sk) => sk.id === session.skillId);
-                            return s?.skillType === 'mentor' ? session.skillTitle : formatBookTitle(session.skillTitle);
+                            return s?.skillType === 'mentor' ? session.skillTitle : formatBookTitleByLocale(session.skillTitle, locale);
                           })()}</span>
                           {(() => {
                             const s = skills.find((sk) => sk.id === session.skillId);
@@ -1148,7 +1062,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                           ? 'hover:bg-[#e2d8c3] text-gray-600 hover:text-gray-900'
                           : 'hover:bg-gray-200 text-gray-400 hover:text-gray-900'
                       }`}
-                      title="删除对话记录"
+                      title={t('workspace.deleteSession')}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1168,7 +1082,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
             <MarketSection
               search={marketSearch}
               onSearchChange={setMarketSearch}
-              searchPlaceholder="搜索书名或作者..."
+              searchPlaceholder={t('market.searchPlaceholder')}
               tagsContainerRef={tagsContainerRef}
               selectedCategory={selectedCategory}
               onCategoryChange={setSelectedCategory}
@@ -1189,14 +1103,14 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               remainingCount={remainingCount}
               onSelectSkill={handleSelectBookFromMarket}
               onViewDetail={(skill) => setDetailSkill(skill)}
-              unitLabel="本原著书籍"
+              unitLabel={t('market.unitBooks')}
             />
           ) : mainView === 'mentor' ? (
             /* ==================== MENTOR MARKET VIEW ==================== */
             <MarketSection
               search={mentorSearch}
               onSearchChange={setMentorSearch}
-              searchPlaceholder="搜索导师名或领域..."
+              searchPlaceholder={t('market.searchPlaceholderMentor')}
               tagsContainerRef={mentorTagsContainerRef}
               selectedCategory={mentorSelectedCategory}
               onCategoryChange={setMentorSelectedCategory}
@@ -1217,7 +1131,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               remainingCount={mentorRemainingCount}
               onSelectSkill={handleSelectBookFromMarket}
               onViewDetail={(skill) => setMentorDetailSkill(skill)}
-              unitLabel="位导师"
+              unitLabel={t('market.unitMentors')}
             />
           ) : (
             /* ==================== CHAT VIEW ==================== */
@@ -1231,7 +1145,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                   className="px-3 py-1.5 rounded-full font-medium text-xs transition-all flex items-center gap-1.5 cursor-pointer text-gray-500 hover:text-gray-800 hover:bg-gray-100 active:scale-98 shrink-0"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>新建对话</span>
+                  <span>{t('workspace.newSession')}</span>
                 </button>
               </div>
 
@@ -1274,7 +1188,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                               <button
                                 onClick={() => handleCopyText(msg.id, msg.content)}
                                 className="absolute top-2.5 right-2.5 p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
-                                title="复制回答"
+                                title={t('workspace.copyAnswer')}
                               >
                                 {copiedMsgId === msg.id ? (
                                   <Check className="w-3.5 h-3.5 text-gray-900" />
@@ -1286,7 +1200,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                               <div className="mt-3 pt-2 space-y-2">
                                 <div className="text-[11px] font-bold text-gray-500 flex items-center gap-1.5">
                                   <Sparkles className="w-3.5 h-3.5 text-gray-700" />
-                                  <span>推荐追问：</span>
+                                  <span>{t('workspace.recommendedQuestions')}</span>
                                 </div>
                                 <div className="flex flex-wrap gap-1.5">
                                   {(
@@ -1321,11 +1235,11 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                     <div className="flex flex-col items-start space-y-1.5 text-left pb-4 border-b border-transparent hover:border-gray-200 transition-colors">
                       <div className="flex items-center gap-2 px-3 py-1 bg-gray-100 border border-gray-200/90 rounded-full text-xs text-gray-700 font-sans shadow-2xs">
                         <Brain className="w-3.5 h-3.5 text-gray-800 animate-pulse shrink-0" />
-                        <span className="font-semibold text-gray-800">深度思考中</span>
+                        <span className="font-semibold text-gray-800">{t('workspace.deepThinking')}</span>
                         <span className="text-gray-300">|</span>
                         <span className="flex items-center gap-1 font-mono font-medium text-gray-900">
                           <Clock className="w-3 h-3 text-gray-500 shrink-0" />
-                          已思考 {thinkingSeconds.toFixed(1)} 秒
+                          {t('workspace.thinkingSeconds', { seconds: thinkingSeconds.toFixed(1) })}
                         </span>
                       </div>
 
@@ -1364,14 +1278,17 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                       placeholder={
                         isGenerating
                           ? activeSession?.id === generatingSessionId
-                            ? `模型深度思考回答中... 可先在此输入下一条消息（回答完成后点击发送）`
-                            : `上个对话（${formatBookTitle(
-                                sessions.find((s) => s.id === generatingSessionId)?.skillTitle ||
-                                  '原著'
-                              )}）正在回答中... 可先在此输入内容`
+                            ? t('workspace.inputThinking')
+                            : t('workspace.inputOtherSession', {
+                                title: formatBookTitleByLocale(
+                                  sessions.find((s) => s.id === generatingSessionId)?.skillTitle ||
+                                    t('workspace.defaultBookTitle'),
+                                  locale
+                                ),
+                              })
                           : activeSkill
-                          ? `向${formatBookTitle(activeSkill.title)}提出你的思考问题...`
-                          : '请输入您的问题...'
+                          ? t('workspace.inputForBook', { title: formatBookTitleByLocale(activeSkill.title, locale) })
+                          : t('workspace.inputDefault')
                       }
                       className="w-full bg-transparent text-sm text-gray-900 placeholder:text-gray-400 outline-none resize-none leading-relaxed p-1 max-h-36 overflow-y-auto font-sans"
                     />
@@ -1397,13 +1314,13 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                             <Loader2 className="w-3.5 h-3.5 text-gray-700 animate-spin" />
                             <span>
                               {activeSession?.id === generatingSessionId
-                                ? '回答中...'
-                                : '等待回答完成...'}
+                                ? t('workspace.sendAnswering')
+                                : t('workspace.sendWaiting')}
                             </span>
                           </>
                         ) : (
                           <>
-                            <span>发起对话</span>
+                            <span>{t('workspace.sendStart')}</span>
                             <Send className="w-3.5 h-3.5" />
                           </>
                         )}
@@ -1421,16 +1338,16 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
       {deletingSession && (
         <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-2xl shadow-xl border border-gray-200 p-5 space-y-4 text-left">
-            <h3 className="text-sm font-serif font-bold text-gray-900">确认删除对话记录？</h3>
+            <h3 className="text-sm font-serif font-bold text-gray-900">{t('workspace.confirmDeleteTitle')}</h3>
             <p className="text-xs text-gray-600 leading-relaxed">
-              将清除{formatBookTitle(deletingSession.skillTitle)}的本条对话历史，此操作不可撤销。
+              {t('workspace.confirmDeleteBody', { title: formatBookTitleByLocale(deletingSession.skillTitle, locale) })}
             </p>
             <div className="flex items-center justify-end gap-2 pt-1">
               <button
                 onClick={() => setDeletingSession(null)}
                 className="px-3.5 py-1.5 rounded-xl text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors cursor-pointer"
               >
-                取消
+                {t('common.cancel')}
               </button>
               <button
                 onClick={() => {
@@ -1439,7 +1356,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                 }}
                 className="px-3.5 py-1.5 rounded-xl text-xs text-[#2c221e] bg-[#f4efe6] hover:bg-[#eae3d5] border border-[#e2d8c3] transition-colors cursor-pointer font-bold shadow-2xs"
               >
-                确认删除
+                {t('workspace.confirmDelete')}
               </button>
             </div>
           </div>
@@ -1452,7 +1369,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-gray-200 p-6 space-y-4 text-left relative animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between pb-3 border-b border-gray-100">
               <h3 className="text-base font-bold text-gray-900 font-serif flex items-center gap-2">
-                <span>全部图书标签</span>
+                <span>{t('workspace.allBookTags')}</span>
                 <span className="text-xs font-sans font-normal text-gray-500">
                   (共 {categories.length} 个标签)
                 </span>
@@ -1481,7 +1398,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                     }`}
                   >
-                    #{cat === '全部' ? `全部 (${bookSkills.length})` : cat}
+                    #{cat === ALL_CATEGORIES ? t('workspace.allWithCount', { count: bookSkills.length }) : cat}
                   </button>
                 );
               })}
@@ -1496,7 +1413,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-gray-200 p-6 space-y-4 text-left relative animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between pb-3 border-b border-gray-100">
               <h3 className="text-base font-bold text-gray-900 font-serif flex items-center gap-2">
-                <span>全部导师标签</span>
+                <span>{t('workspace.allMentorTags')}</span>
                 <span className="text-xs font-sans font-normal text-gray-500">
                   (共 {categories.length} 个标签)
                 </span>
@@ -1525,7 +1442,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                     }`}
                   >
-                    #{cat === '全部' ? `全部 (${mentorSkills.length})` : cat}
+                    #{cat === ALL_CATEGORIES ? t('workspace.allWithCount', { count: mentorSkills.length }) : cat}
                   </button>
                 );
               })}
@@ -1576,14 +1493,14 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               type="button"
               onClick={() => setToastInfo(null)}
               className="absolute top-3.5 right-3.5 p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
-              title="关闭"
+              title={t('common.close')}
             >
               <X className="w-4 h-4" />
             </button>
 
             <div className="space-y-2 px-2 pt-1">
               <h3 className="font-bold text-sm text-gray-900">
-                {toastInfo.type === 'warning' ? '温馨提示' : toastInfo.type === 'success' ? '操作成功' : '提示'}
+                {toastInfo.type === 'warning' ? t('workspace.toast.warning') : toastInfo.type === 'success' ? t('workspace.toast.success') : t('workspace.toast.info')}
               </h3>
               <p className="text-xs leading-relaxed text-gray-600">
                 {toastInfo.message}

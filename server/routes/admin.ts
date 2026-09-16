@@ -6,7 +6,7 @@ import { Express, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { db, getTodayString } from '../db.js';
-import { ADMIN_PASSWORD, ADMIN_PHONE, ADMIN_CHALLENGE_COOKIE, CHALLENGE_TTL_MS, COOKIE_SECURE, DATA_DIR } from '../config.js';
+import { ADMIN_PASSWORD, ADMIN_PHONE, ADMIN_CHALLENGE_COOKIE, ADMIN_MFA_ENABLED, ADMIN_SECOND_PASSWORD, CHALLENGE_TTL_MS, COOKIE_SECURE, DATA_DIR } from '../config.js';
 import { metrics, onlineUsers } from '../services/metrics.js';
 import {
   AuthRequest,
@@ -20,13 +20,22 @@ import {
 } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
 import { ADMIN_PASSWORD_MIN_LENGTH, generateTemporaryPassword, validateStrongPassword } from '../services/password.js';
-import { decryptSecret, encryptSecret, generateRecoveryCodes, generateTotpSetup, hmac, randomToken, sha256, verifyTotp } from '../services/security.js';
-import { MembershipTier, UserProfile, cleanBookTitle, AdminSecurityRecord } from '../../src/types.js';
+import { asyncJsonHandler } from '../middleware/asyncHandler.js';
+import { decryptSecret, encryptSecret, generateRecoveryCodes, generateTotpSetup, generateUserId, hmac, randomToken, safeEqual, sha256, verifyTotp } from '../services/security.js';
+import { MembershipTier, UserProfile, cleanBookTitle, AdminSecurityRecord, membershipExpiryFromNow, tierDailyLimit } from '../../src/types.js';
 
 const adminLoginLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: '尝试过于频繁，请稍后再试' } });
 const adminActionLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false });
 const challengeCookieBase = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const, path: '/' };
-const loginFailures = new Map<string, { count: number; lockedUntil: number }>();
+const loginFailures = new Map<string, { count: number; lockedUntil: number; lastSeen: number }>();
+
+// 失败计数若不清理会随攻击流量无界增长；15 分钟无活动的条目视为过期
+setInterval(() => {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  for (const [key, item] of loginFailures) {
+    if (item.lastSeen < cutoff) loginFailures.delete(key);
+  }
+}, 60_000).unref();
 
 function validAdminCredentials(phone: string, password: string): boolean {
   return phone === ADMIN_PHONE && password === ADMIN_PASSWORD;
@@ -55,16 +64,25 @@ export function registerAdminRoutes(app: Express): void {
   app.post('/api/admin/login', adminLoginLimiter, (req, res) => {
     const phone = String(req.body?.phone || '').trim();
     const password = String(req.body?.password || req.body?.code || '');
+    const secondPassword = String(req.body?.secondPassword || '');
     const key = `${req.ip}:${phone}`;
     const failure = loginFailures.get(key);
     if (failure && failure.lockedUntil > Date.now()) return res.status(423).json({ error: 'ACCOUNT_LOCKED', message: '登录尝试过多，请 15 分钟后重试' });
-    if (!validAdminCredentials(phone, password)) {
-      const next = { count: (failure?.count || 0) + 1, lockedUntil: 0 };
+    // 安全码与密码合并判定：失败提示统一，不暴露是哪一重出错
+    const secondOk = !ADMIN_SECOND_PASSWORD || safeEqual(sha256(secondPassword), sha256(ADMIN_SECOND_PASSWORD));
+    if (!validAdminCredentials(phone, password) || !secondOk) {
+      const next = { count: (failure?.count || 0) + 1, lockedUntil: 0, lastSeen: Date.now() };
       if (next.count >= 5) next.lockedUntil = Date.now() + 15 * 60 * 1000;
       loginFailures.set(key, next);
       return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: '账号或密码错误' });
     }
     loginFailures.delete(key);
+    // 关闭动态验证码时直接建立管理员会话（仅内测受控环境使用，见 config.ADMIN_MFA_ENABLED）
+    if (!ADMIN_MFA_ENABLED) {
+      createAdminSession(req as AuthRequest, res);
+      db.audit({ actorType: 'admin', actorId: 'admin', action: 'admin_login_success', metadata: { mfa: 'disabled' }, ip: req.ip, userAgent: req.get('user-agent') || undefined });
+      return res.json({ success: true, user: sanitizeUser(buildAdminProfile()) });
+    }
     const security = db.getAdminSecurity();
     if (!security?.totpEnabled || !security.totpSecretEnc) {
       issueAdminChallenge(req as AuthRequest, res, 'admin_mfa_setup');
@@ -155,7 +173,19 @@ export function registerAdminRoutes(app: Express): void {
 
   app.get('/api/admin/stats', requireAdmin, (_req, res) => {
     const stats = db.getAdminStats();
-    res.json({ ...stats, onlineUsers: onlineUsers(), totalRequestsServed: metrics.totalRequestsServed, requestsLastMinute: metrics.requestsLastMinute, activeSseConnections: metrics.activeSseConnections });
+    // 前端按 { stats: {...} } 解构；此前直接平铺返回，导致仪表盘永远停在「统计数据加载中…」。
+    // peakConcurrentSse 与 uptimeHours 也在前端 AdminStats 里消费，需一并返回。
+    res.json({
+      stats: {
+        ...stats,
+        onlineUsers: onlineUsers(),
+        totalRequestsServed: metrics.totalRequestsServed,
+        requestsLastMinute: metrics.requestsLastMinute,
+        activeSseConnections: metrics.activeSseConnections,
+        peakConcurrentSse: metrics.peakConcurrentSse,
+        uptimeHours: Number(((Date.now() - metrics.startTime) / 3_600_000).toFixed(1)),
+      },
+    });
   });
 
   app.get('/api/admin/users', requireAdmin, (_req, res) => {
@@ -163,7 +193,7 @@ export function registerAdminRoutes(app: Express): void {
     res.json({ users });
   });
 
-  app.post('/api/admin/users/create', requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/users/create', requireAdmin, asyncJsonHandler<AuthRequest>(async (req, res) => {
     const phone = String(req.body?.phone || '').trim();
     const membershipTier = (req.body?.membershipTier || 'free_member') as MembershipTier;
     if (!/^\d{11}$/.test(phone)) return res.status(400).json({ error: 'INVALID_PHONE', message: '手机号码必须为 11 位数字' });
@@ -171,17 +201,10 @@ export function registerAdminRoutes(app: Express): void {
     if (!['free_member', 'monthly_member', 'quarterly_member', 'yearly_member'].includes(membershipTier)) return res.status(400).json({ error: 'INVALID_TIER', message: '会员等级无效' });
     const temporaryPassword = generateTemporaryPassword();
     const now = new Date();
-    const expiry = membershipTier === 'monthly_member' ? new Date(now.getFullYear(), now.getMonth() + 1, now.getDate())
-      : membershipTier === 'quarterly_member' ? new Date(now.getFullYear(), now.getMonth() + 3, now.getDate())
-      : membershipTier === 'yearly_member' ? new Date(now.getFullYear() + 1, now.getMonth(), now.getDate())
-      : undefined;
-    const config = db.getLLMConfig();
-    const dailyLimit = membershipTier === 'monthly_member' ? (config.dailyLimits?.monthlyMember ?? 100)
-      : membershipTier === 'quarterly_member' ? (config.dailyLimits?.quarterlyMember ?? 200)
-      : membershipTier === 'yearly_member' ? (config.dailyLimits?.yearlyMember ?? 500)
-      : (config.dailyLimits?.freeMember ?? 10);
+    const expiry = membershipExpiryFromNow(membershipTier);
+    const dailyLimit = tierDailyLimit(db.getLLMConfig(), membershipTier);
     const user: UserProfile = {
-      id: `usr_${crypto.randomUUID()}`,
+      id: generateUserId(),
       unionId: `union_${crypto.randomUUID()}`,
       phone,
       password: await bcrypt.hash(temporaryPassword, 12),
@@ -190,7 +213,7 @@ export function registerAdminRoutes(app: Express): void {
       role: 'member',
       status: 'active',
       membershipTier,
-      membershipExpiresAt: expiry?.toISOString(),
+      membershipExpiresAt: expiry,
       mustChangePassword: true,
       dailyMaxChats: dailyLimit,
       dailyUsedCount: 0,
@@ -200,7 +223,7 @@ export function registerAdminRoutes(app: Express): void {
     const saved = db.saveUser(user);
     db.audit({ actorType: 'admin', actorId: 'admin', action: 'user_created', targetType: 'user', targetId: saved.id, metadata: { phone: maskPhone(phone), tier: membershipTier }, ip: req.ip, userAgent: req.get('user-agent') || undefined });
     res.json({ success: true, user: sanitizeUser(saved), temporaryPassword });
-  });
+  }));
 
   app.post('/api/admin/users/reset-password', requireAdmin, async (req: AuthRequest, res) => {
     const user = db.getUserById(String(req.body?.userId || ''));
@@ -240,12 +263,13 @@ export function registerAdminRoutes(app: Express): void {
       user.nickname = cleanPhone.slice(-4);
     }
     if (membershipTier && ['free_member', 'monthly_member', 'quarterly_member', 'yearly_member'].includes(membershipTier)) {
-      user.membershipTier = membershipTier;
-      const config = db.getLLMConfig();
-      user.dailyMaxChats = membershipTier === 'monthly_member' ? (config.dailyLimits?.monthlyMember ?? 100)
-        : membershipTier === 'quarterly_member' ? (config.dailyLimits?.quarterlyMember ?? 200)
-        : membershipTier === 'yearly_member' ? (config.dailyLimits?.yearlyMember ?? 500)
-        : (config.dailyLimits?.freeMember ?? 10);
+      // 额度每次保存都跟当前全局配置对齐
+      user.dailyMaxChats = tierDailyLimit(db.getLLMConfig(), membershipTier);
+      if (user.membershipTier !== membershipTier) {
+        // 后台改等级 = 重新配置权益：到期日从当前时间重新起算，不叠加原有剩余时长
+        user.membershipTier = membershipTier;
+        user.membershipExpiresAt = membershipExpiryFromNow(membershipTier);
+      }
     }
     if (resetQuota) user.dailyUsedCount = 0;
     db.saveUser(user);
@@ -264,28 +288,6 @@ export function registerAdminRoutes(app: Express): void {
     const success = db.deleteUser(req.params.userId);
     db.audit({ actorType: 'admin', actorId: 'admin', action: 'user_deleted', targetType: 'user', targetId: req.params.userId, ip: req.ip, userAgent: req.get('user-agent') || undefined });
     res.json({ success });
-  });
-
-  app.get('/api/admin/deletion-requests', requireAdmin, (_req, res) => {
-    res.json({ requests: db.getDeletionRequests('pending') });
-  });
-
-  app.post('/api/admin/deletion-requests/:id/approve', requireAdmin, (req: AuthRequest, res) => {
-    const request = db.getDeletionRequests('pending').find((item) => item.id === req.params.id);
-    if (!request) return res.status(404).json({ error: 'NOT_FOUND', message: '注销申请不存在' });
-    db.anonymizeUser(request.userId);
-    db.updateDeletionRequest(request.id, 'approved', 'admin');
-    db.audit({ actorType: 'admin', actorId: 'admin', action: 'deletion_approved', targetType: 'user', targetId: request.userId, ip: req.ip, userAgent: req.get('user-agent') || undefined });
-    res.json({ success: true });
-  });
-
-  app.post('/api/admin/deletion-requests/:id/reject', requireAdmin, (req: AuthRequest, res) => {
-    const request = db.getDeletionRequests('pending').find((item) => item.id === req.params.id);
-    if (!request) return res.status(404).json({ error: 'NOT_FOUND', message: '注销申请不存在' });
-    const user = db.getUserById(request.userId);
-    if (user) { user.status = 'active'; db.saveUser(user); }
-    db.updateDeletionRequest(request.id, 'rejected', 'admin', String(req.body?.reason || '').slice(0, 500));
-    res.json({ success: true });
   });
 
   app.post('/api/admin/users/clear-all', requireAdmin, (_req, res) => {
@@ -399,6 +401,7 @@ export function registerAdminRoutes(app: Express): void {
     if (isInvalidOrPlaceholderKey(cleanKey)) return res.json({ success: false, error: '未提供有效 API 密钥' });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12_000);
+    const startTime = Date.now();
     try {
       const upstream = await fetch(resolveOpenAIUrl(baseUrl), {
         method: 'POST',
@@ -407,7 +410,7 @@ export function registerAdminRoutes(app: Express): void {
         signal: controller.signal,
       });
       const body = await upstream.text();
-      res.json({ success: upstream.ok, status: upstream.status, response: body.slice(0, 500) });
+      res.json({ success: upstream.ok, status: upstream.status, model, latencyMs: Date.now() - startTime, response: body.slice(0, 500) });
     } catch (error: any) {
       res.json({ success: false, error: error?.message || '连接失败' });
     } finally {

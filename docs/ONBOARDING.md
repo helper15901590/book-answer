@@ -1,7 +1,7 @@
-# Onboarding Guide: Remix AI
+# Onboarding Guide: book_answer
 
 ## Overview
-经典著作与导师人物 AI 思想蒸馏平台。匿名用户可以通过主站浏览书籍、导师和详情，但创建会话、查看历史或发送消息必须登录。管理员后台提供账号、会员、技能、LLM、统计、MFA 和注销审核。
+经典著作与导师人物 AI 思想蒸馏平台。匿名用户可以通过主站浏览书籍、导师和详情，但创建会话、查看历史或发送消息必须登录。管理员后台提供账号、会员、技能、LLM、统计和 MFA。
 
 ## Tech Stack
 | Layer | Technology |
@@ -35,7 +35,7 @@ Express app (server/app.ts)
 | `server/app.ts` | Express 应用工厂 |
 | `server/db.ts` | 数据模型、迁移和持久化 |
 | `server/middleware/auth.ts` | 会话、CSRF、用户和管理员鉴权 |
-| `server/routes/auth.ts` | 登录、改密、个人数据导出、注销 |
+| `server/routes/auth.ts` | 登录、改密 |
 | `server/routes/chat.ts` | 登录后聊天和 SSE |
 | `server/routes/admin.ts` | 管理员 MFA 与后台操作 |
 | `src/components/AiStudioWorkspace.tsx` | 市场与聊天 UI |
@@ -49,7 +49,6 @@ Express app (server/app.ts)
 - `auth_challenges`：首次改密、管理员 MFA 的短期挑战
 - `admin_security`：加密 TOTP secret 与恢复码哈希
 - `quota_ledger`：配额预留、消费和退款
-- `deletion_requests`：注销申请与审核
 - `audit_logs`：管理员敏感操作审计
 - `skills` / `system_config`：技能和运行配置
 
@@ -57,7 +56,7 @@ Express app (server/app.ts)
 ### 用户登录
 1. 管理员创建用户，系统生成 16 字符临时密码并只显示一次。
 2. 用户首次登录只得到短期改密挑战。
-3. 用户设置至少 12 位且包含字母和数字的长期密码。
+3. 用户设置至少 6 位的长期密码（不强制字符组合，界面实时提示强度与风险）。
 4. 服务端创建 30 天滚动会话，Cookie 使用 HttpOnly、SameSite=Strict 和生产 Secure。
 5. 改密、重置密码或禁用账号会撤销全部旧会话。
 
@@ -91,8 +90,6 @@ CONFIRM_ADMIN_MFA_RESET=RESET_MFA npm run admin:mfa-reset
 - `POST /api/auth/login`：手机号和密码
 - `GET /api/auth/me`：当前用户或 401
 - `POST /api/auth/change-password`：修改密码
-- `GET /api/account/export`：导出个人数据
-- `POST/GET/DELETE /api/account/deletion-request`：注销申请管理
 - `/api/chat/*`：全部要求登录
 - `/api/admin/*`：全部要求管理员会话
 

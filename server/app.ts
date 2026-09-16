@@ -6,7 +6,7 @@ import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
 import * as Sentry from '@sentry/node';
 import { createServer as createViteServer } from 'vite';
-import { IS_PROD, IS_TEST, DATA_DIR, TRUST_PROXY } from './config.js';
+import { IS_PROD, IS_TEST, DATA_DIR, TRUST_PROXY, ALLOW_INSECURE_HTTP } from './config.js';
 import { db } from './db.js';
 import { authMiddleware, csrfProtection } from './middleware/auth.js';
 import { metrics } from './services/metrics.js';
@@ -22,21 +22,27 @@ export async function createApp() {
   const app = express();
   if (TRUST_PROXY) app.set('trust proxy', 1);
 
+  // 开发模式下 Vite 会注入内联 preamble 脚本，并通过独立端口的 WebSocket 推送 HMR，
+  // 严格 CSP 会同时拦掉这两者导致整页白屏；生产构建产物没有内联脚本，策略保持严格不变。
+  const isViteDev = !IS_PROD && !IS_TEST;
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
+        scriptSrc: isViteDev ? ["'self'", "'unsafe-inline'"] : ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:', 'https://images.unsplash.com'],
-        connectSrc: ["'self'"],
+        connectSrc: isViteDev ? ["'self'", 'ws:', 'wss:'] : ["'self'"],
         fontSrc: ["'self'", 'data:'],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         frameAncestors: ["'none'"],
         formAction: ["'self'"],
+        // 无 HTTPS 部署必须移除：否则浏览器会把同源资源升级为 https，无 TLS 监听时整页白屏
+        ...(ALLOW_INSECURE_HTTP ? { upgradeInsecureRequests: null } : {}),
       },
     },
+    hsts: ALLOW_INSECURE_HTTP ? false : undefined,
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   }));
   app.get('/api/health', (_req, res) => {

@@ -58,7 +58,7 @@ describe('commercial MVP API', () => {
     const code = generateSync({ secret: setup.body.secret });
     const confirm = await admin.post('/api/admin/mfa/confirm').set('Origin', 'http://127.0.0.1:3000').send({ code }).expect(200);
     expect(confirm.body.user.role).toBe('admin');
-    adminCsrf = cookieValue(confirm, 'remix_admin_csrf');
+    adminCsrf = cookieValue(confirm, 'book_answer_admin_csrf');
     expect(adminCsrf).not.toBe('');    const llmView = await admin.get('/api/admin/llm-config').set('Origin', 'http://127.0.0.1:3000').expect(200);
     expect(llmView.body.llmConfig).not.toHaveProperty('apiKey');
 
@@ -72,7 +72,7 @@ describe('commercial MVP API', () => {
     expect(firstLogin.body.passwordChangeRequired).toBe(true);
 
     const changed = await user.post('/api/auth/change-password').set('Origin', 'http://127.0.0.1:3000').send({ currentPassword: created.body.temporaryPassword, newPassword: userPassword }).expect(200);
-    userCsrf = cookieValue(changed, 'remix_user_csrf');
+    userCsrf = cookieValue(changed, 'book_answer_user_csrf');
     expect(changed.body.user.mustChangePassword).toBe(false);
     await user.get('/api/auth/me').expect(200);
     await user.get('/api/chat/sessions').expect(200);
@@ -100,7 +100,7 @@ describe('commercial MVP API', () => {
       const login = await admin.post('/api/admin/login').set('Origin', 'http://127.0.0.1:3000').send({ phone: '13800000000', password: 'AdminPass12345678!' }).expect(200);
       expect(login.body.mfaRequired).toBe(true);
       const verify = await admin.post('/api/admin/mfa/verify').set('Origin', 'http://127.0.0.1:3000').send({ code: generateSync({ secret: adminTotpSecret }) }).expect(200);
-      const csrf = cookieValue(verify, 'remix_admin_csrf');
+      const csrf = cookieValue(verify, 'book_answer_admin_csrf');
       const llmResponse = await admin.post('/api/admin/llm-config').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', csrf).send({
         apiKeyMode: 'replace',
         apiKey: 'sk-test-1234567890',
@@ -115,7 +115,8 @@ describe('commercial MVP API', () => {
 
       failNext = true;
       const failedStream = await userAgent.post('/api/chat/stream').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', userCsrf).send({ sessionId: session.body.session.id, skillId: 'skill-santi', messageText: '这次应当失败' }).expect(200);
-      expect(failedStream.text).toContain('AI 服务暂时不可用');
+      // SSE 错误帧回传的是错误码，由前端按当前界面语言翻译后再展示（见 src/i18n/serverMessage.ts）
+      expect(failedStream.text).toContain('AI_UNAVAILABLE');
       const me = await userAgent.get('/api/auth/me').expect(200);
       expect(me.body.user.dailyUsedCount).toBe(1);
     } finally {

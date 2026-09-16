@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { Express, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
@@ -9,15 +8,14 @@ import {
   clearUserSession,
   createUserSession,
   issueChallengeToken,
-  requireActiveUser,
-  requireUser,
   sanitizeUser,
 } from '../middleware/auth.js';
 import { PASSWORD_CHANGE_COOKIE, CHALLENGE_TTL_MS, COOKIE_SECURE } from '../config.js';
 import { sha256 } from '../services/security.js';
 import { USER_PASSWORD_MIN_LENGTH, validateStrongPassword } from '../services/password.js';
+import { asyncJsonHandler } from '../middleware/asyncHandler.js';
 
-const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: '尝试过于频繁，请稍后再试' } });
+const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '尝试过于频繁，请稍后再试' } });
 const loginSchema = z.object({ phone: z.string().trim().regex(/^\d{11}$/), password: z.string().min(1) });
 const passwordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(USER_PASSWORD_MIN_LENGTH).max(128) });
 const COOKIE_BASE = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const, path: '/' };
@@ -53,33 +51,32 @@ export function registerAuthRoutes(app: Express): void {
     return res.json({ success: true, user: sanitizeUser({ ...user, mustChangePassword: false }) });
   });
 
-  app.post('/api/auth/change-password', authLimiter, async (req: AuthRequest, res) => {
+  // 仅服务于「首次登录强制改密」：必须携带登录时下发的改密凭证。
+  // 登录态下的自助改密入口已移除，本接口不再接受已建立会话的请求。
+  app.post('/api/auth/change-password', authLimiter, asyncJsonHandler<AuthRequest>(async (req, res) => {
     const parsed = passwordSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'INVALID_PASSWORD', message: `新密码至少 ${USER_PASSWORD_MIN_LENGTH} 个字符且包含字母和数字` });
+    if (!parsed.success) return res.status(400).json({ error: 'INVALID_PASSWORD', message: `新密码至少 ${USER_PASSWORD_MIN_LENGTH} 个字符` });
     const { currentPassword, newPassword } = parsed.data;
-    let user = req.user;
-    let challengeId: string | undefined;
-    if (!user || req.sessionKind !== 'user') {
-      const token = req.cookies?.[PASSWORD_CHANGE_COOKIE] as string | undefined;
-      if (!token) return res.status(401).json({ error: 'UNAUTHENTICATED', message: '登录状态已失效，请重新登录' });
-      const challenge = db.getAuthChallengeByTokenHash(sha256(token), 'password_change');
-      if (!challenge || challenge.usedAt || new Date(challenge.expiresAt).getTime() <= Date.now()) return res.status(401).json({ error: 'CHALLENGE_EXPIRED', message: '改密会话已过期，请重新登录' });
-      user = db.getUserById(challenge.subjectId);
-      challengeId = challenge.id;
-    }
+
+    const token = req.cookies?.[PASSWORD_CHANGE_COOKIE] as string | undefined;
+    if (!token) return res.status(401).json({ error: 'UNAUTHENTICATED', message: '登录状态已失效，请重新登录' });
+    const challenge = db.getAuthChallengeByTokenHash(sha256(token), 'password_change');
+    if (!challenge || challenge.usedAt || new Date(challenge.expiresAt).getTime() <= Date.now()) return res.status(401).json({ error: 'CHALLENGE_EXPIRED', message: '改密会话已过期，请重新登录' });
+    const user = db.getUserById(challenge.subjectId);
+
     if (!user || !user.password || !bcrypt.compareSync(currentPassword, user.password)) return genericLoginFailure(res);
-    const policyError = validateStrongPassword(newPassword, USER_PASSWORD_MIN_LENGTH, user.phone);
+    const policyError = validateStrongPassword(newPassword, USER_PASSWORD_MIN_LENGTH, user.phone, false);
     if (policyError) return res.status(400).json({ error: 'INVALID_PASSWORD', message: policyError });
     if (bcrypt.compareSync(newPassword, user.password)) return res.status(400).json({ error: 'PASSWORD_REUSED', message: '新密码不能与当前密码相同' });
 
     db.updateUserPassword(user.id, await bcrypt.hash(newPassword, 12));
     db.revokeUserSessions(user.id);
-    if (challengeId) db.markAuthChallengeUsed(challengeId);
+    db.markAuthChallengeUsed(challenge.id);
     res.clearCookie(PASSWORD_CHANGE_COOKIE, COOKIE_BASE);
     createUserSession(req, res, user.id);
     db.audit({ actorType: 'user', actorId: user.id, action: 'password_changed', ip: req.ip, userAgent: req.get('user-agent') || undefined });
     return res.json({ success: true, user: sanitizeUser({ ...user, mustChangePassword: false, password: undefined }) });
-  });
+  }));
 
   app.get('/api/auth/me', (req: AuthRequest, res) => {
     if (!req.user || req.sessionKind !== 'user') return res.status(401).json({ error: 'UNAUTHENTICATED' });
@@ -88,45 +85,6 @@ export function registerAuthRoutes(app: Express): void {
 
   app.post('/api/auth/logout', (req: AuthRequest, res) => {
     clearUserSession(req, res);
-    res.json({ success: true });
-  });
-
-  app.get('/api/account/export', requireUser, (req: AuthRequest, res) => {
-    const data = db.exportUserData(req.user!.id);
-    if (!data) return res.status(404).json({ error: 'NOT_FOUND', message: '账号不存在' });
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="remix-account-${req.user!.id}.json"`);
-    return res.send(JSON.stringify(data, null, 2));
-  });
-
-  app.get('/api/account/deletion-request', requireUser, (req: AuthRequest, res) => {
-    res.json({ request: db.getDeletionRequestByUser(req.user!.id) || null });
-  });
-
-  app.post('/api/account/deletion-request', requireUser, (req: AuthRequest, res) => {
-    const current = db.getDeletionRequestByUser(req.user!.id);
-    if (current?.status === 'pending') return res.status(409).json({ error: 'ALREADY_PENDING', message: '注销申请已提交，请等待管理员处理' });
-    const request = {
-      id: crypto.randomUUID(),
-      userId: req.user!.id,
-      status: 'pending' as const,
-      requestedAt: new Date().toISOString(),
-      reason: typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 500) : undefined,
-    };
-    db.createDeletionRequest(request);
-    req.user!.status = 'deletion_pending';
-    db.saveUser(req.user!);
-    db.audit({ actorType: 'user', actorId: req.user!.id, action: 'deletion_requested', targetType: 'user', targetId: req.user!.id, ip: req.ip, userAgent: req.get('user-agent') || undefined });
-    res.json({ success: true, request });
-  });
-
-  app.delete('/api/account/deletion-request', requireUser, (req: AuthRequest, res) => {
-    const current = db.getDeletionRequestByUser(req.user!.id);
-    if (!current || current.status !== 'pending') return res.status(404).json({ error: 'NOT_FOUND', message: '没有待处理的注销申请' });
-    db.updateDeletionRequest(current.id, 'cancelled', req.user!.id, '用户撤销');
-    req.user!.status = 'active';
-    db.saveUser(req.user!);
-    db.audit({ actorType: 'user', actorId: req.user!.id, action: 'deletion_request_cancelled', targetType: 'deletion_request', targetId: current.id, ip: req.ip, userAgent: req.get('user-agent') || undefined });
     res.json({ success: true });
   });
 }

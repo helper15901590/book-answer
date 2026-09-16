@@ -6,13 +6,14 @@ import {
   AdminSecurityRecord,
   AuthSessionRecord,
   ChatSession,
-  DeletionRequest,
   LLMConfig,
   MembershipTier,
   OrderLog,
   Skill,
   UserProfile,
   getEffectiveMembershipTier,
+  membershipExpiryAfterRenewal,
+  tierDailyLimit,
 } from '../src/types.js';
 import { INITIAL_SKILLS, INITIAL_MENTORS, DEFAULT_LLM_CONFIG } from '../src/data/initialData.js';
 import { DATA_DIR, ADMIN_PHONE } from './config.js';
@@ -264,15 +265,6 @@ export class CommercialSQLDatabase {
         created_at TEXT NOT NULL,
         settled_at TEXT
       );
-      CREATE TABLE IF NOT EXISTS deletion_requests (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        status TEXT NOT NULL,
-        requested_at TEXT NOT NULL,
-        reviewed_at TEXT,
-        reviewed_by TEXT,
-        reason TEXT
-      );
       CREATE TABLE IF NOT EXISTS audit_logs (
         id TEXT PRIMARY KEY,
         actor_type TEXT NOT NULL,
@@ -302,7 +294,6 @@ export class CommercialSQLDatabase {
       CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_auth_challenges_expiry ON auth_challenges(expires_at);
       CREATE INDEX IF NOT EXISTS idx_quota_user ON quota_ledger(user_id, created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_deletion_status ON deletion_requests(status, requested_at);
       CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_orders_trade_no ON orders(trade_no);
       CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id, created_at DESC);
@@ -497,7 +488,6 @@ export class CommercialSQLDatabase {
       this.db!.prepare('DELETE FROM auth_sessions').run();
       this.db!.prepare('DELETE FROM auth_challenges').run();
       this.db!.prepare('DELETE FROM quota_ledger').run();
-      this.db!.prepare('DELETE FROM deletion_requests').run();
       this.db!.prepare('DELETE FROM audit_logs').run();
       this.db!.prepare('DELETE FROM orders').run();
       this.db!.prepare('DELETE FROM users').run();
@@ -517,21 +507,10 @@ export class CommercialSQLDatabase {
     const tx = this.db.transaction(() => {
       this.db!.prepare('DELETE FROM chat_sessions WHERE user_id = ?').run(userId);
       this.db!.prepare('DELETE FROM auth_sessions WHERE subject_type = ? AND subject_id = ?').run('user', userId);
-      this.db!.prepare('DELETE FROM deletion_requests WHERE user_id = ?').run(userId);
+      // 配额账本与改密凭证没有外键约束，不显式清理会残留孤儿行
+      this.db!.prepare('DELETE FROM quota_ledger WHERE user_id = ?').run(userId);
+      this.db!.prepare('DELETE FROM auth_challenges WHERE subject_id = ?').run(userId);
       return this.db!.prepare('DELETE FROM users WHERE id = ?').run(userId).changes > 0;
-    });
-    return tx();
-  }
-
-  public anonymizeUser(userId: string): boolean {
-    if (!this.db) return false;
-    const anonymizedPhone = `deleted_${crypto.randomUUID()}`;
-    const tx = this.db.transaction(() => {
-      this.db!.prepare('DELETE FROM chat_sessions WHERE user_id = ?').run(userId);
-      this.db!.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE subject_type = ? AND subject_id = ?').run(new Date().toISOString(), 'user', userId);
-      this.db!.prepare('UPDATE users SET phone = ?, union_id = ?, password_hash = NULL, nickname = ?, avatar = ?, status = ?, deleted_at = ?, updated_at = ? WHERE id = ?')
-        .run(anonymizedPhone, `deleted_${crypto.randomUUID()}`, '已注销用户', '', 'deleted', new Date().toISOString(), new Date().toISOString(), userId);
-      return true;
     });
     return tx();
   }
@@ -539,20 +518,10 @@ export class CommercialSQLDatabase {
   public upgradeUserMembership(userId: string, tier: MembershipTier): UserProfile | undefined {
     const user = this.getUserById(userId);
     if (!user) return undefined;
-    const baseDate = user.membershipExpiresAt && new Date(user.membershipExpiresAt).getTime() > Date.now()
-      ? new Date(user.membershipExpiresAt)
-      : new Date();
-    const months = tier === 'quarterly_member' ? 3 : tier === 'yearly_member' ? 12 : 1;
-    const expiry = new Date(baseDate);
-    expiry.setMonth(expiry.getMonth() + months);
     user.membershipTier = tier;
-    user.membershipExpiresAt = expiry.toISOString();
+    user.membershipExpiresAt = membershipExpiryAfterRenewal(user.membershipExpiresAt, tier);
     user.role = 'member';
-    const config = this.getLLMConfig();
-    user.dailyMaxChats = tier === 'monthly_member' ? (config.dailyLimits?.monthlyMember ?? 100)
-      : tier === 'quarterly_member' ? (config.dailyLimits?.quarterlyMember ?? 200)
-      : tier === 'yearly_member' ? (config.dailyLimits?.yearlyMember ?? 500)
-      : (config.dailyLimits?.freeMember ?? 10);
+    user.dailyMaxChats = tierDailyLimit(this.getLLMConfig(), tier);
     return this.saveUser(user);
   }
 
@@ -865,50 +834,9 @@ export class CommercialSQLDatabase {
     ).run(record.totpSecretEnc || null, record.totpEnabled ? 1 : 0, JSON.stringify(record.recoveryCodeHashes || []), record.pendingSecretEnc || null, JSON.stringify(record.pendingRecoveryHashes || []), record.authVersion || null, record.updatedAt);
   }
 
-  public createDeletionRequest(request: DeletionRequest): DeletionRequest {
-    if (!this.db) return request;
-    this.db.prepare('INSERT INTO deletion_requests (id, user_id, status, requested_at, reviewed_at, reviewed_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(request.id, request.userId, request.status, request.requestedAt, request.reviewedAt || null, request.reviewedBy || null, request.reason || null);
-    return request;
-  }
-
-  public getDeletionRequestByUser(userId: string): DeletionRequest | undefined {
-    if (!this.db) return undefined;
-    const row = this.db.prepare('SELECT * FROM deletion_requests WHERE user_id = ? ORDER BY requested_at DESC LIMIT 1').get(userId) as any;
-    return row ? this.mapDeletionRequest(row) : undefined;
-  }
-
-  public getDeletionRequests(status?: string): DeletionRequest[] {
-    if (!this.db) return [];
-    const rows = status
-      ? this.db.prepare('SELECT * FROM deletion_requests WHERE status = ? ORDER BY requested_at DESC').all(status)
-      : this.db.prepare('SELECT * FROM deletion_requests ORDER BY requested_at DESC').all();
-    return (rows as any[]).map((row) => this.mapDeletionRequest(row));
-  }
-
-  public updateDeletionRequest(id: string, status: DeletionRequest['status'], reviewedBy: string, reason?: string): void {
-    this.db?.prepare('UPDATE deletion_requests SET status = ?, reviewed_at = ?, reviewed_by = ?, reason = ? WHERE id = ?').run(status, new Date().toISOString(), reviewedBy, reason || null, id);
-  }
-
-  private mapDeletionRequest(row: any): DeletionRequest {
-    return { id: row.id, userId: row.user_id, status: row.status, requestedAt: row.requested_at, reviewedAt: row.reviewed_at || undefined, reviewedBy: row.reviewed_by || undefined, reason: row.reason || undefined };
-  }
-
   public audit(entry: { actorType: string; actorId?: string; action: string; targetType?: string; targetId?: string; metadata?: Record<string, unknown>; ip?: string; userAgent?: string }): void {
     this.db?.prepare('INSERT INTO audit_logs (id, actor_type, actor_id, action, target_type, target_id, metadata, ip, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(crypto.randomUUID(), entry.actorType, entry.actorId || null, entry.action, entry.targetType || null, entry.targetId || null, JSON.stringify(entry.metadata || {}), entry.ip || null, entry.userAgent || null, new Date().toISOString());
-  }
-
-  public exportUserData(userId: string): Record<string, unknown> | undefined {
-    const user = this.getUserById(userId);
-    if (!user) return undefined;
-    const { password: _password, ...safeUser } = user;
-    return {
-      exportedAt: new Date().toISOString(),
-      user: safeUser,
-      sessions: this.getChatSessions(userId),
-      deletionRequest: this.getDeletionRequestByUser(userId) || null,
-    };
   }
 
   public reserveQuota(userId: string, limit: number, requestId: string): { allowed: boolean; ledgerId?: string } {
@@ -930,10 +858,16 @@ export class CommercialSQLDatabase {
   public settleQuota(ledgerId: string, status: 'consumed' | 'refunded'): void {
     if (!this.db) return;
     const tx = this.db.transaction(() => {
-      const row = this.db!.prepare('SELECT user_id, status FROM quota_ledger WHERE id = ?').get(ledgerId) as any;
+      const row = this.db!.prepare('SELECT user_id, status, period_key FROM quota_ledger WHERE id = ?').get(ledgerId) as any;
       if (!row || row.status !== 'reserved') return;
       if (status === 'refunded') {
-        this.db!.prepare('UPDATE users SET daily_used_count = MAX(0, daily_used_count - 1), updated_at = ? WHERE id = ?').run(new Date().toISOString(), row.user_id);
+        // 只在账本仍属于当前计费周期时才回退计数：跨日/跨月时计数已被新周期重置，
+        // 此时再减会把新周期刚用掉的一次抹掉（等于用户少扣一次额度）。
+        const user = this.getUserById(row.user_id);
+        const currentPeriod = user && getEffectiveMembershipTier(user) === 'free_member' ? getTodayString() : getCurrentMonthString();
+        if (row.period_key === currentPeriod) {
+          this.db!.prepare('UPDATE users SET daily_used_count = MAX(0, daily_used_count - 1), updated_at = ? WHERE id = ?').run(new Date().toISOString(), row.user_id);
+        }
       }
       this.db!.prepare('UPDATE quota_ledger SET status = ?, settled_at = ? WHERE id = ?').run(status, new Date().toISOString(), ledgerId);
     });

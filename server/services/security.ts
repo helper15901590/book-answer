@@ -46,11 +46,21 @@ export function generateRecoveryCodes(count = 8): string[] {
   return Array.from({ length: count }, () => `${randomToken(9)}-${randomToken(9)}`.toUpperCase());
 }
 
+// 用户对外 ID：usr_ 前缀 + 8 位随机字符，共 12 位。
+// 字符集剔除 0/O/1/I/l 等易混字符，便于人工核对与口头传达。
+const USER_ID_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+export function generateUserId(): string {
+  let suffix = '';
+  for (let i = 0; i < 8; i++) suffix += USER_ID_ALPHABET[crypto.randomInt(USER_ID_ALPHABET.length)];
+  return `usr_${suffix}`;
+}
+
 export function generateTotpSetup(label: string): { secret: string; otpauthUri: string } {
   const secret = generateSecret();
   return {
     secret,
-    otpauthUri: generateURI({ issuer: 'Remix AI', label, secret }),
+    otpauthUri: generateURI({ issuer: 'book_answer', label, secret }),
   };
 }
 

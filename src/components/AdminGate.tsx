@@ -12,6 +12,7 @@ export const AdminGate: React.FC = () => {
   const [step, setStep] = useState<LoginStep>('credentials');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const [secondPassword, setSecondPassword] = useState('');
   const [otp, setOtp] = useState('');
   const [recoveryCode, setRecoveryCode] = useState('');
   const [setupData, setSetupData] = useState<{ secret: string; otpauthUri: string; recoveryCodes: string[] } | null>(null);
@@ -31,7 +32,7 @@ export const AdminGate: React.FC = () => {
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault(); setError(''); setSubmitting(true);
     try {
-      const response = await fetch('/api/admin/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.trim(), password }) });
+      const response = await fetch('/api/admin/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.trim(), password, secondPassword }) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) return setError(data.message || '登录失败');
       if (data.mfaSetupRequired) {
@@ -80,6 +81,8 @@ export const AdminGate: React.FC = () => {
               <input value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} inputMode="numeric" autoComplete="username" className="w-full px-3 py-2 border border-gray-200 rounded-xl text-xs focus:outline-none focus:border-gray-900" placeholder="11 位手机号" />
               <label className="block text-[11px] font-medium text-gray-500">管理员密码</label>
               <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" className="w-full px-3 py-2 border border-gray-200 rounded-xl text-xs focus:outline-none focus:border-gray-900" placeholder="至少 16 位强密码" />
+              <label className="block text-[11px] font-medium text-gray-500">安全码</label>
+              <input type="password" value={secondPassword} onChange={(e) => setSecondPassword(e.target.value)} autoComplete="off" className="w-full px-3 py-2 border border-gray-200 rounded-xl text-xs focus:outline-none focus:border-gray-900" placeholder="管理员安全码；服务端未配置时留空" />
               {error && <p className="text-xs text-rose-500">{error}</p>}
               <button disabled={submitting} className="w-full py-2 bg-gray-900 text-white text-xs font-medium rounded-xl disabled:opacity-50">{submitting ? '登录中…' : '下一步'}</button>
             </form>

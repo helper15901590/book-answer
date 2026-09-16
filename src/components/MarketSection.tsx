@@ -1,13 +1,15 @@
 import React from 'react';
 import { Search, X, ChevronDown } from 'lucide-react';
-import { Skill, UserProfile } from '../types';
+import { Skill, UserProfile, ALL_CATEGORIES } from '../types';
 import { SkillCard } from './SkillCard';
+import { useI18n } from '../i18n';
 
 interface MarketSectionProps {
   /** 搜索关键词 */
   search: string;
   onSearchChange: (val: string) => void;
-  searchPlaceholder?: string;
+  /** 搜索框占位文案（由父组件传入，因为函数默认参数里不能用 Hook 取翻译） */
+  searchPlaceholder: string;
   /** 分类标签 */
   tagsContainerRef: React.RefObject<HTMLDivElement | null>;
   selectedCategory: string;
@@ -39,7 +41,7 @@ interface MarketSectionProps {
 export default function MarketSection({
   search,
   onSearchChange,
-  searchPlaceholder = '搜索书名或作者...',
+  searchPlaceholder,
   tagsContainerRef,
   selectedCategory,
   onCategoryChange,
@@ -62,6 +64,8 @@ export default function MarketSection({
   onViewDetail,
   unitLabel,
 }: MarketSectionProps) {
+  const { t } = useI18n();
+
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50/50">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 md:gap-4">
@@ -93,14 +97,14 @@ export default function MarketSection({
           >
             {/* 全部 */}
             <button
-              onClick={() => onCategoryChange('全部')}
+              onClick={() => onCategoryChange(ALL_CATEGORIES)}
               className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap ${
-                selectedCategory === '全部'
+                selectedCategory === ALL_CATEGORIES
                   ? 'bg-[#f4efe6] text-[#2c221e] font-bold shadow-2xs'
                   : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100/80'
               }`}
             >
-              #全部 ({allSkillsCount})
+              {t('market.allTag', { count: allSkillsCount })}
             </button>
 
             {/* Category Tags */}
@@ -128,7 +132,7 @@ export default function MarketSection({
                     <button
                       onClick={onOpenAllCategories}
                       className="px-2 py-1 rounded-lg text-xs font-bold text-gray-500 hover:text-gray-900 hover:bg-gray-100/80 cursor-pointer transition-colors whitespace-nowrap"
-                      title="点击查看全部标签"
+                      title={t('market.viewAllTags')}
                     >
                       ...
                     </button>
@@ -142,7 +146,7 @@ export default function MarketSection({
 
       {/* Grid Layout: Displays 3 items per row on lg screens */}
       {filteredSkills.length === 0 ? (
-        <div className="p-12 text-center text-sm text-gray-400">暂无卡片</div>
+        <div className="p-12 text-center text-sm text-gray-400">{t('market.empty')}</div>
       ) : (
         <div className="space-y-6 pb-6">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -173,9 +177,9 @@ export default function MarketSection({
                 onClick={onLoadMore}
                 className="group px-6 py-2.5 rounded-full bg-white hover:bg-[#f4efe6] text-[#2c221e] border border-gray-300 hover:border-[#ded3be] text-xs font-semibold shadow-2xs hover:shadow-xs transition-all duration-200 flex items-center gap-2 cursor-pointer active:scale-98"
               >
-                <span>展开继续加载</span>
+                <span>{t('market.loadMore')}</span>
                 <span className="text-gray-400 group-hover:text-gray-600 font-normal">
-                  (已展示 {displayedSkills.length}/{filteredSkills.length} · 剩余 {remainingCount} 位)
+                  {t('market.loadMoreHint', { shown: displayedSkills.length, total: filteredSkills.length, remaining: remainingCount })}
                 </span>
                 <ChevronDown className="w-4 h-4 text-gray-500 group-hover:text-[#2c221e] group-hover:translate-y-0.5 transition-transform" />
               </button>
@@ -185,7 +189,7 @@ export default function MarketSection({
           {!hasMoreCards && filteredSkills.length > pageSize && (
             <div className="text-center py-4 text-xs text-gray-400 flex items-center justify-center gap-2">
               <span className="w-8 h-px bg-gray-200"></span>
-              <span>已展示全部 {filteredSkills.length} {unitLabel}</span>
+              <span>{t('market.allShown', { count: filteredSkills.length, unit: unitLabel })}</span>
               <span className="w-8 h-px bg-gray-200"></span>
             </div>
           )}

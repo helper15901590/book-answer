@@ -1,6 +1,7 @@
 import React from 'react';
 import { MessageSquare, Flame } from 'lucide-react';
-import { Skill, UserProfile, cleanBookTitle } from '../types';
+import { Skill, UserProfile, cleanBookTitle, ALL_CATEGORIES } from '../types';
+import { useI18n, formatCompactCount } from '../i18n';
 
 interface SkillCardProps {
   skill: Skill;
@@ -25,13 +26,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
   onSelectSkill,
   onViewDetail,
 }) => {
-  const formatCount = (count?: number) => {
-    if (!count) return '0';
-    if (count >= 10000) {
-      return `${(count / 10000).toFixed(1)}w`;
-    }
-    return `${count}`;
-  };
+  const { t, locale } = useI18n();
 
   const getRankText = (r?: number) => {
     if (r === undefined || r <= 0) return null;
@@ -53,11 +48,11 @@ export const SkillCard: React.FC<SkillCardProps> = ({
   );
 
   let displayTags = rawTags;
-  if (selectedCategory && selectedCategory !== '全部' && rawTags.includes(selectedCategory)) {
+  if (selectedCategory && selectedCategory !== ALL_CATEGORIES && rawTags.includes(selectedCategory)) {
     displayTags = [selectedCategory, ...rawTags.filter((t) => t !== selectedCategory)];
   }
 
-  const primaryCategory = displayTags[0] || skill.category || '精选';
+  const primaryCategory = displayTags[0] || skill.category || t('skillCard.featured');
 
   const handleCardClick = () => {
     if (onViewDetail) {
@@ -85,7 +80,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
         {/* 热度 */}
         <div className="flex items-center gap-1 text-[11px] text-gray-500 font-medium shrink-0">
           <Flame className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-          <span>{formatCount(skill.searchCount)} 热度</span>
+          <span>{t('skillCard.heat', { count: formatCompactCount(skill.searchCount, locale) })}</span>
         </div>
       </div>
 
@@ -138,10 +133,10 @@ export const SkillCard: React.FC<SkillCardProps> = ({
                 onSelectSkill(skill);
               }}
               className="px-1 py-1 text-xs font-semibold text-[#8c6227] hover:text-[#5c3e14] bg-transparent hover:bg-transparent rounded-lg transition-all duration-150 flex items-center gap-1 cursor-pointer shrink-0 active:scale-95 whitespace-nowrap group/btn hover:scale-105"
-              title="进入对话"
+              title={t('skillCard.enterChat')}
             >
               <MessageSquare className="w-3.5 h-3.5 transition-transform group-hover/btn:scale-110" />
-              <span className="group-hover/btn:underline underline-offset-2">对话</span>
+              <span className="group-hover/btn:underline underline-offset-2">{t('skillCard.chat')}</span>
             </button>
           </div>
         </div>

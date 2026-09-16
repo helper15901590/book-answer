@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LLMConfig, MembershipTier, Skill, UserProfile, formatBookTitle, getEffectiveMembershipTier } from '../types';
 import ReactMarkdown from 'react-markdown';
+import { copyText } from '../lib/clipboard';
 import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY } from '../data/initialData';
 import {
   Settings,
@@ -17,18 +18,11 @@ import {
   LayoutDashboard,
   Trash2,
   Edit2,
-  TrendingUp,
   Save,
-  Tags,
   FolderTree,
-  Flame,
-  Hash,
   ShieldCheck,
-  Zap,
   KeyRound,
-  ChevronDown,
   ChevronLeft,
-  MoreHorizontal,
   GripVertical,
   ArrowUp,
   ArrowDown,
@@ -39,10 +33,6 @@ import {
   RotateCcw,
   Bot,
   UserPlus,
-  Calendar,
-  Clock,
-  Phone,
-  ChevronRight,
   Sparkles,
   Loader2,
 } from 'lucide-react';
@@ -257,6 +247,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   });
 
   const [credential, setCredential] = useState<{ title: string; phone: string; password: string } | null>(null);
+  const [credentialCopied, setCredentialCopied] = useState(false);
+  useEffect(() => { setCredentialCopied(false); }, [credential]);
+
+  // 复制临时密码
+  const copyCredential = async () => {
+    if (!credential) return;
+    if (await copyText(credential.password)) {
+      setCredentialCopied(true);
+      setTimeout(() => setCredentialCopied(false), 2000);
+    } else {
+      showToast('复制失败，请手动选中密码后复制');
+    }
+  };
 
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
   const [editUserForm, setEditUserForm] = useState<{
@@ -269,7 +272,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     membershipTier: 'monthly_member',
   });
 
-  // Deletion Confirmation Modal State
+  // 二次确认弹窗状态
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -422,6 +425,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           membershipTier: editUserForm.membershipTier,
         }),
       });
+      // 会话过期或 CSRF 失效时直接回到登录页，避免弹窗卡住且看不到原因
+      ensureAdminAuthorized(res);
       const data = await res.json();
       if (data.success) {
         showToast('用户信息与权益已成功更新');
@@ -485,21 +490,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       fetchAdminData();
     } catch (error: any) {
       showToast(error?.message || '状态更新失败');
-    }
-  };
-
-  const handleReviewDeletion = async (u: UserProfile, approve: boolean) => {
-    try {
-      const list = await apiFetch('/api/admin/deletion-requests').then((response) => response.json());
-      const request = Array.isArray(list.requests) ? list.requests.find((item: any) => item.userId === u.id) : null;
-      if (!request) throw new Error('未找到注销申请');
-      const response = await apiFetch(`/api/admin/deletion-requests/${request.id}/${approve ? 'approve' : 'reject'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.message || '处理失败');
-      showToast(approve ? '注销已批准并匿名化' : '注销申请已驳回');
-      fetchAdminData();
-    } catch (error: any) {
-      showToast(error?.message || '处理失败');
     }
   };
 
@@ -612,9 +602,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (data.success && Array.isArray(data.questions) && data.questions.length > 0) {
         setEditingSkill((prev) => (prev ? { ...prev, sampleQuestions: data.questions } : null));
         showToast('大模型已根据上传文档提炼生成专属推荐追问！');
+      } else {
+        // 失败时无反馈会让管理员以为「点了没反应」，必须给出原因
+        showToast(data.error || data.message || '提炼失败，请确认已在模型配置中填好 API 密钥后重试');
       }
     } catch (e) {
       console.error('Failed to generate skill questions:', e);
+      showToast('提炼失败，请稍后重试');
     } finally {
       setIsGeneratingQuestions(false);
     }
@@ -862,33 +856,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleDeleteTag = (tagToDelete: string) => {
     handleDeleteCategory(tagToDelete);
-  };
-
-  const handleUpdateUserRole = async (targetUser: UserProfile, newRole: UserProfile['role']) => {
-    try {
-      const limits = llmConfig.dailyLimits || { freeMember: 10, monthlyMember: 100, quarterlyMember: 200, yearlyMember: 500 };
-      const newMaxChats = limits.freeMember ?? 10;
-
-      const res = await apiFetch('/api/admin/users/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: targetUser.id,
-          role: newRole,
-          dailyMaxChats: newMaxChats,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast(`用户 ${targetUser.nickname} 身份已更新为 ${newRole === 'admin' ? '管理员' : '会员'}`);
-        if (targetUser.id === user.id) {
-          setUser({ ...user, role: newRole, dailyMaxChats: newMaxChats });
-        }
-        fetchAdminData();
-      }
-    } catch (e) {
-      alert('修改用户失败');
-    }
   };
 
   // Helper metrics for categories & tags - strictly 100% database driven
@@ -1764,7 +1731,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                                     </span>
                                     <span className="text-[11px] text-slate-400">ID: {u.id}</span>
-                                    {u.status && u.status !== 'active' && (<span className="text-[10px] mt-1 text-amber-700">{u.status === 'disabled' ? '已禁用' : u.status === 'deletion_pending' ? '待注销' : '已注销'}</span>)}
+                                    {u.status && u.status !== 'active' && (<span className="text-[10px] mt-1 text-amber-700">{u.status === 'disabled' ? '已禁用' : '已注销'}</span>)}
                                   </div>
                                 </td>
                                 <td className="py-3 px-4 font-medium whitespace-nowrap">
@@ -1814,12 +1781,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                     >
                                       <ShieldCheck className="w-3.5 h-3.5" />
                                     </button>
-                                    {u.status === 'deletion_pending' && (
-                                      <>
-                                        <button type="button" title="批准注销" onClick={() => handleReviewDeletion(u, true)} className="px-2 py-1 text-[10px] rounded bg-rose-50 text-rose-700">批准注销</button>
-                                        <button type="button" title="驳回注销" onClick={() => handleReviewDeletion(u, false)} className="px-2 py-1 text-[10px] rounded bg-slate-100 text-slate-700">驳回</button>
-                                      </>
-                                    )}
                                     <button
                                       type="button"
                                       title="删除用户"
@@ -1857,6 +1818,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <tr className="bg-slate-50/70 border-b border-slate-200/80 text-slate-500 font-medium">
                         <th className="py-2.5 px-4 font-medium">会员等级 / 用户类型</th>
                         <th className="py-2.5 px-4 font-medium w-48">模型调用上限</th>
+                        <th className="py-2.5 px-4 font-medium w-40">订阅价格（元）</th>
                         <th className="py-2.5 px-4 text-slate-400 font-normal">权益说明</th>
                       </tr>
                     </thead>
@@ -1886,6 +1848,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             <span className="text-slate-400 text-[11px] shrink-0">次/日</span>
                           </div>
                         </td>
+                        <td className="py-3.5 px-4 text-slate-400 text-xs">免费</td>
                         <td className="py-3.5 px-4 text-slate-500 text-xs">
                           注册并完成手机或微信登录后的每日赠送额度（每日零点刷新）
                         </td>
@@ -1914,6 +1877,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               className="w-full px-2.5 py-1.5 bg-white border border-slate-200/90 rounded-lg text-slate-900 font-mono text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
                             />
                             <span className="text-slate-400 text-[11px] shrink-0">次/月</span>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="flex items-center gap-1.5 max-w-[130px]">
+                            <span className="text-slate-400 text-[11px] shrink-0">¥</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={llmConfig.membershipPlans?.monthlyPrice ?? 29.9}
+                              onChange={(e) => setLlmConfig({
+                                ...llmConfig,
+                                membershipPlans: {
+                                  ...(llmConfig.membershipPlans || { monthlyPrice: 29.9, quarterlyPrice: 69.9, yearlyPrice: 199 }),
+                                  monthlyPrice: parseFloat(e.target.value) || 0,
+                                }
+                              })}
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200/90 rounded-lg text-slate-900 font-mono text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
+                            />
+                            <span className="text-slate-400 text-[11px] shrink-0">元</span>
                           </div>
                         </td>
                         <td className="py-3.5 px-4 text-slate-500 text-xs">
@@ -1946,6 +1929,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             <span className="text-slate-400 text-[11px] shrink-0">次/月</span>
                           </div>
                         </td>
+                        <td className="py-3.5 px-4">
+                          <div className="flex items-center gap-1.5 max-w-[130px]">
+                            <span className="text-slate-400 text-[11px] shrink-0">¥</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={llmConfig.membershipPlans?.quarterlyPrice ?? 69.9}
+                              onChange={(e) => setLlmConfig({
+                                ...llmConfig,
+                                membershipPlans: {
+                                  ...(llmConfig.membershipPlans || { monthlyPrice: 29.9, quarterlyPrice: 69.9, yearlyPrice: 199 }),
+                                  quarterlyPrice: parseFloat(e.target.value) || 0,
+                                }
+                              })}
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200/90 rounded-lg text-slate-900 font-mono text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
+                            />
+                            <span className="text-slate-400 text-[11px] shrink-0">元</span>
+                          </div>
+                        </td>
                         <td className="py-3.5 px-4 text-slate-500 text-xs">
                           季度会员享有的更高每月模型调用额度
                         </td>
@@ -1976,6 +1979,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             <span className="text-slate-400 text-[11px] shrink-0">次/月</span>
                           </div>
                         </td>
+                        <td className="py-3.5 px-4">
+                          <div className="flex items-center gap-1.5 max-w-[130px]">
+                            <span className="text-slate-400 text-[11px] shrink-0">¥</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={llmConfig.membershipPlans?.yearlyPrice ?? 199}
+                              onChange={(e) => setLlmConfig({
+                                ...llmConfig,
+                                membershipPlans: {
+                                  ...(llmConfig.membershipPlans || { monthlyPrice: 29.9, quarterlyPrice: 69.9, yearlyPrice: 199 }),
+                                  yearlyPrice: parseFloat(e.target.value) || 0,
+                                }
+                              })}
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200/90 rounded-lg text-slate-900 font-mono text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
+                            />
+                            <span className="text-slate-400 text-[11px] shrink-0">元</span>
+                          </div>
+                        </td>
                         <td className="py-3.5 px-4 text-slate-500 text-xs">
                           尊享年度会员享有的超高每月调用上限
                         </td>
@@ -1985,7 +2008,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
 
                 <p className="text-[11px] text-slate-400 px-1">
-                  提示：修改调用上限后（普通会员按日计算，月度/季度/年度会员按月计算），点击下方“保存资源配置”按钮即可实时生效。
+                  提示：调用上限（普通会员按日计算，月度/季度/年度会员按月计算）与订阅价格修改后，点击下方“保存资源配置”按钮即可实时生效；价格会同步展示在用户端的「会员订阅」窗口中。
                 </p>
 
                 <div className="flex justify-end pt-2">
@@ -3025,7 +3048,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <p>临时密码（仅显示一次）：</p>
               <div className="flex items-center gap-2">
                 <code className="flex-1 break-all bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm text-gray-900">{credential.password}</code>
-                <button type="button" onClick={() => navigator.clipboard.writeText(credential.password)} className="px-3 py-2 rounded-lg bg-gray-900 text-white text-xs">复制</button>
+                <button type="button" onClick={copyCredential} className="px-3 py-2 rounded-lg bg-gray-900 text-white text-xs">{credentialCopied ? '已复制' : '复制'}</button>
               </div>
             </div>
             <button type="button" onClick={() => setCredential(null)} className="w-full py-2 bg-gray-900 text-white rounded-lg text-xs font-medium">我已安全保存</button>

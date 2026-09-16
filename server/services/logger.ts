@@ -3,7 +3,7 @@ import { APP_VERSION, IS_PROD, IS_TEST } from '../config.js';
 
 export const logger = pino({
   level: IS_TEST ? 'silent' : (process.env.LOG_LEVEL || (IS_PROD ? 'info' : 'debug')),
-  base: { service: 'remix-api', version: APP_VERSION },
+  base: { service: 'book_answer-api', version: APP_VERSION },
   redact: {
     paths: [
       'req.headers.cookie',
