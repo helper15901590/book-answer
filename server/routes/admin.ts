@@ -224,7 +224,7 @@ export function registerAdminRoutes(app: Express): void {
     res.json({ success: true, user: sanitizeUser(saved), temporaryPassword });
   }));
 
-  app.post('/api/admin/users/reset-password', requireAdmin, async (req: AuthRequest, res) => {
+  app.post('/api/admin/users/reset-password', requireAdmin, asyncJsonHandler<AuthRequest>(async (req, res) => {
     const user = db.getUserById(String(req.body?.userId || ''));
     if (!user) return res.status(404).json({ error: 'NOT_FOUND', message: '用户不存在' });
     const temporaryPassword = generateTemporaryPassword();
@@ -235,7 +235,7 @@ export function registerAdminRoutes(app: Express): void {
     db.saveUser(user);
     db.audit({ actorType: 'admin', actorId: 'admin', action: 'user_password_reset', targetType: 'user', targetId: user.id, ip: req.ip, userAgent: req.get('user-agent') || undefined });
     res.json({ success: true, temporaryPassword });
-  });
+  }));
 
   app.post('/api/admin/users/status', requireAdmin, (req: AuthRequest, res) => {
     const user = db.getUserById(String(req.body?.userId || ''));

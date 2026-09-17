@@ -115,5 +115,23 @@ export const AdminGate: React.FC = () => {
     );
   }
 
-  return <AdminPanel llmConfig={llmConfig} setLlmConfig={setLlmConfig} skills={skills} setSkills={setSkills} user={admin} setUser={setAdmin} onClose={async () => { try { await apiFetch('/api/admin/logout', { method: 'POST' }); } finally { window.location.href = '/'; } }} />;
+  // 退出后台。apiFetch 对非 2xx 不会抛异常，因此必须显式检查 response.ok：
+  // 登出请求失败时会话 Cookie 仍然有效（管理员会话 8 小时且不滚动续期），
+  // 若无条件跳转，管理员会以为已经退出，把仍然可用的后台留在浏览器上。
+  const handleAdminClose = async () => {
+    let loggedOut = false;
+    try {
+      const response = await apiFetch('/api/admin/logout', { method: 'POST' });
+      loggedOut = response.ok;
+    } catch {
+      loggedOut = false;
+    }
+    if (!loggedOut) {
+      alert('退出登录失败，当前会话可能仍然有效。请重试，或直接关闭浏览器。');
+      return;
+    }
+    window.location.href = '/';
+  };
+
+  return <AdminPanel llmConfig={llmConfig} setLlmConfig={setLlmConfig} skills={skills} setSkills={setSkills} user={admin} setUser={setAdmin} onClose={handleAdminClose} />;
 };

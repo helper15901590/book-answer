@@ -62,6 +62,9 @@ export async function createApp() {
   app.use(express.json({ limit: '5mb' }));
   app.use(cookieParser());
   app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/api/health' } }));
+  // /assets 是匿名可访问的用户上传素材（单文件上限 2MB，文件名随机但仍可被转发）。
+  // 限流收窄到 /api 之后它失去了兜底，这里单独补一个同样宽松的桶，避免单个 IP 无上限拉取带宽。
+  app.use('/assets', rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false }));
   app.use('/assets', express.static(path.join(DATA_DIR, 'assets'), { fallthrough: true, index: false }));
   app.use((_req, _res, next) => {
     metrics.totalRequestsServed++;

@@ -879,11 +879,11 @@ export class CommercialSQLDatabase {
     this.db?.prepare('DELETE FROM orders').run();
   }
 
-  // 后台统计只需要「条数」与「按天分布」，不需要消息正文。
-  // 原实现把全部会话连同每条消息 JSON.parse 进 JS 再遍历，成本随历史线性增长
-  // （500 用户 / 6 万条消息实测约 366ms，而后台面板每 30 秒轮询一次）。
-  // 这里改用 SQLite 的 JSON 函数在原地聚合，消息正文不再进入 JS 堆。
-  public getChatStatsSummary(): {
+  // 后台统计只需要「条数」与「按天分布」，不需要消息正文，这里用 SQLite 的 JSON 函数就地聚合。
+  // 注意：交替顺序的配对实测显示这条路径并没有更快（6 万条消息下短消息约慢 10%，长消息持平），
+  // 因为它同样必须扫描全部历史。换来的收益是不再把消息正文搬进 JS 堆、损坏数据也不会让接口 500。
+  // 真正的提速要在写入时增量计数，而不是换查询写法。仅供 getAdminStats 使用，故为 private。
+  private getChatStatsSummary(): {
     totalSessions: number;
     todaySessions: number;
     totalMessages: number;
@@ -936,16 +936,15 @@ export class CommercialSQLDatabase {
     const days = lastNDays(14);
     const dayIndex = new Map(days.map((day, index) => [day, index]));
     const dailyNewUsers = days.map((date) => ({ date, count: 0 }));
-    const dailyMessages = days.map((date) => ({ date, count: 0 }));
+    // 直接复用统计方法按同一天窗算出的序列，不再本地重建一份再按下标覆盖：
+    // 两处各自调用 lastNDays(14) 会把「窗口长度与顺序一致」变成一条隐式契约，改一处就会静默错位。
+    const dailyMessages = chatStats.dailyMessages;
     let newUsersToday = 0;
     let newUsers7d = 0;
     let activeUsers7d = 0;
     let activeUsers30d = 0;
     const cutoff7d = localDateNDaysAgo(6);
     const cutoff30d = localDateNDaysAgo(29);
-    let totalMessages = 0;
-    let todaySessions = 0;
-    let todayMessages = 0;
 
     users.forEach((user) => {
       const tier = getEffectiveMembershipTier(user);
@@ -961,13 +960,6 @@ export class CommercialSQLDatabase {
         const index = dayIndex.get(createdDate);
         if (index !== undefined) dailyNewUsers[index].count++;
       }
-    });
-
-    totalMessages = chatStats.totalMessages;
-    todaySessions = chatStats.todaySessions;
-    todayMessages = chatStats.todayMessages;
-    chatStats.dailyMessages.forEach((entry, index) => {
-      dailyMessages[index].count = entry.count;
     });
 
     return {
@@ -987,9 +979,9 @@ export class CommercialSQLDatabase {
       totalPaidOrders: orders.filter((order) => order.status === 'success').length,
       totalRevenue: Number(totalRevenue.toFixed(2)),
       totalChatSessions: chatStats.totalSessions,
-      todaySessions,
-      totalMessages,
-      todayMessages,
+      todaySessions: chatStats.todaySessions,
+      totalMessages: chatStats.totalMessages,
+      todayMessages: chatStats.todayMessages,
       databaseType: 'SQLite (better-sqlite3, WAL)',
       storagePath: SQLITE_DB_PATH,
     };

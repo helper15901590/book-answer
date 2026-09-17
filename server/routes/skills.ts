@@ -34,7 +34,9 @@ async function generateQuestions(req: AuthRequest, res: Response): Promise<void>
     const questions = await generateRecommendedQuestionsFromLLM({ systemPrompt, title, author });
     if (skillId && typeof skillId === 'string') {
       const skill = db.getSkillById(skillId);
-      if (skill) {
+      // 空结果必须跳过写回：上游超时、超限或输出解析失败时本函数返回 []，
+      // 直接落库会把管理员既有的推荐追问清空，而前端只显示「提炼失败」，无从察觉原内容已丢失。
+      if (skill && questions.length > 0) {
         skill.sampleQuestions = questions;
         db.saveSkill(skill);
       }

@@ -16,6 +16,9 @@ import { BCRYPT_ROUNDS, USER_PASSWORD_MIN_LENGTH, validateStrongPassword } from 
 import { asyncJsonHandler } from '../middleware/asyncHandler.js';
 
 const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '尝试过于频繁，请稍后再试' } });
+// 改密单独用一个计数桶：首次登录必须走「登录 → 强制改密」两次请求，若与登录共用同一个桶，
+// 共享出口 IP 下每分钟只能放行 5 名新用户，等于把登录的防爆破额度消耗在改密上。
+const passwordChangeLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '尝试过于频繁，请稍后再试' } });
 const loginSchema = z.object({ phone: z.string().trim().regex(/^\d{11}$/), password: z.string().min(1) });
 const passwordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(USER_PASSWORD_MIN_LENGTH).max(128) });
 const COOKIE_BASE = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const, path: '/' };
@@ -25,8 +28,9 @@ function genericLoginFailure(res: Response): void {
 }
 
 export function registerAuthRoutes(app: Express): void {
-  // 必须用异步版 bcrypt：compareSync 会占死事件循环整个哈希时长（成本 10 约 60ms），
-  // 集中登录时所有其他请求都会被卡住。
+  // bcryptjs 是纯 JS 实现，Promise 版在返回之前就已同步算完整段哈希（成本 10 实测约 58ms），
+  // 所以这里的 await 并不能把这段计算移出事件循环——真正的收益来自成本因子降到 10（见 BCRYPT_ROUNDS）。
+  // 保留 async 形式是为了让 asyncJsonHandler 统一兜住异常并返回 JSON 500，而不是让请求挂起。
   app.post('/api/auth/login', authLimiter, asyncJsonHandler(async (req, res) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) return genericLoginFailure(res);
@@ -34,7 +38,11 @@ export function registerAuthRoutes(app: Express): void {
     const user = db.getUserByPhone(phone);
     if (!user || !user.password || user.status === 'disabled' || user.status === 'deleted') return genericLoginFailure(res);
     if (db.isUserLocked(user)) return res.status(423).json({ error: 'ACCOUNT_LOCKED', message: '账号暂时锁定，请 15 分钟后重试' });
-    if (!(await bcrypt.compare(password, user.password))) {
+    const passwordOk = await bcrypt.compare(password, user.password);
+    // 上面的 await 是本处理器唯一的让出点：并发请求可能全部越过门禁后才逐一恢复。
+    // 若不在落库前复检，一个限流窗口内可猜的次数会从 5 次放大到并发数倍。
+    if (db.isUserLocked(user)) return res.status(423).json({ error: 'ACCOUNT_LOCKED', message: '账号暂时锁定，请 15 分钟后重试' });
+    if (!passwordOk) {
       db.recordLoginFailure(user.id);
       return genericLoginFailure(res);
     }
@@ -55,7 +63,7 @@ export function registerAuthRoutes(app: Express): void {
 
   // 仅服务于「首次登录强制改密」：必须携带登录时下发的改密凭证。
   // 登录态下的自助改密入口已移除，本接口不再接受已建立会话的请求。
-  app.post('/api/auth/change-password', authLimiter, asyncJsonHandler<AuthRequest>(async (req, res) => {
+  app.post('/api/auth/change-password', passwordChangeLimiter, asyncJsonHandler<AuthRequest>(async (req, res) => {
     const parsed = passwordSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'INVALID_PASSWORD', message: `新密码至少 ${USER_PASSWORD_MIN_LENGTH} 个字符` });
     const { currentPassword, newPassword } = parsed.data;
