@@ -215,6 +215,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [openSkillMenuId, setOpenSkillMenuId] = useState<string | null>(null);
   const [openCatMenuName, setOpenCatMenuName] = useState<string | null>(null);
 
+  // 打开技能弹窗时「热度」的原值。热度由管理员设定初始值、服务端再随浏览自增，
+  // 若管理员没动这个输入框就不回传，否则会把弹窗打开期间累积的浏览增量覆盖掉。
+  const [skillSearchCountAtOpen, setSkillSearchCountAtOpen] = useState<number | null>(null);
+
   // Skill Modal State
   const [editingSkill, setEditingSkill] = useState<Partial<Skill> | null>(null);
   const [isSkillModalOpen, setIsSkillModalOpen] = useState(false);
@@ -640,6 +644,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       category: primaryCat,
       tags: validTags,
     };
+    // 管理员未改动热度时不回传：服务端会保留库中当前值，弹窗打开期间的浏览自增不会被抹掉。
+    if (skillSearchCountAtOpen !== null && skillToSave.searchCount === skillSearchCountAtOpen) {
+      delete skillToSave.searchCount;
+    }
 
     try {
       const res = await apiFetch('/api/admin/skills', {
@@ -1290,6 +1298,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           systemPrompt: '你是一位深度理解原著的导师。',
                           skillType: 'book',
                         });
+                        setSkillSearchCountAtOpen(null);
                         setIsSkillModalOpen(true);
                       }}
                       className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs shrink-0"
@@ -1382,6 +1391,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                         <button
                                           onClick={() => {
                                             setEditingSkill(s);
+                                            setSkillSearchCountAtOpen(s.searchCount ?? 0);
                                             setIsSkillModalOpen(true);
                                             setOpenSkillMenuId(null);
                                           }}

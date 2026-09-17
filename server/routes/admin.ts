@@ -351,6 +351,8 @@ export function registerAdminRoutes(app: Express): void {
     if (!input?.title || !input?.author) return res.status(400).json({ error: '请填写书名与作者' });
     const tags = Array.isArray(input.tags) ? input.tags.filter((tag: any) => typeof tag === 'string' && tag.trim()) : [];
     const validTags = tags.length ? tags : db.getTags().slice(0, 1);
+    // 更新既有技能时先取当前记录：热度字段缺省时要用它保留库中值，见下方 searchCount。
+    const existing = input.id ? db.getSkillById(String(input.id)) : undefined;
     const skill = {
       id: input.id || `skill-${crypto.randomUUID()}`,
       title: cleanBookTitle(input.title),
@@ -362,7 +364,9 @@ export function registerAdminRoutes(app: Express): void {
       systemPrompt: String(input.systemPrompt || ''),
       sampleQuestions: Array.isArray(input.sampleQuestions) ? input.sampleQuestions.map(String).slice(0, 6) : [],
       chatCount: Number(input.chatCount) || 0,
-      searchCount: Number(input.searchCount) || 0,
+      // 热度由管理员设定初始值、服务端再随浏览自增。字段缺省表示管理员没改动这个输入框，
+      // 必须沿用库中当前值，否则一次只改描述的保存会把弹窗打开期间累积的浏览增量抹掉。
+      searchCount: input.searchCount === undefined ? (existing?.searchCount ?? 0) : Number(input.searchCount) || 0,
       skillType: input.skillType === 'mentor' ? 'mentor' as const : 'book' as const,
     };
     res.json({ success: true, skill: db.saveSkill(skill) });
