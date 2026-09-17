@@ -11,7 +11,6 @@ csrf() { awk -F '\t' '$6=="book_answer_admin_csrf" {print $7}' "$JAR" | tail -1;
 echo "== smoke $BASE =="
 check "health 200" "200" "$(code "$BASE/api/health")"
 check "public skills no systemPrompt" "0" "$(curl -s "$BASE/api/skills" | grep -c systemPrompt)"
-check "public skills no bookContent" "0" "$(curl -s "$BASE/api/skills" | grep -c bookContent)"
 check "unauthenticated sessions 401" "401" "$(code "$BASE/api/chat/sessions")"
 check "forged userId still 401" "401" "$(code "$BASE/api/chat/sessions?userId=usr_forged")"
 check "public questions endpoint removed" "404" "$(code -X POST "$BASE/api/skills/generate-questions" -H 'Content-Type: application/json' -d '{}')"

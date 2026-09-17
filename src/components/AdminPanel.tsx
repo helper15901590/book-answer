@@ -561,12 +561,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     } catch {}
   }, []);
 
-  // 仪表盘页签打开期间每 30 秒静默刷新统计（切换到其他页签即停止）
+  // 仪表盘页签打开期间每 2 分钟静默刷新统计（切换到其他页签即停止）。
+  // 统计接口的成本随历史消息总量线性增长，30 秒一次在数据积累后会明显拖慢服务；
+  // 这是运营看板，2 分钟的延迟无实质影响。
   useEffect(() => {
     if (activeTab !== 'dashboard') return;
     const timer = setInterval(() => {
       fetchAdminData(true);
-    }, 30000);
+    }, 120000);
     return () => clearInterval(timer);
   }, [activeTab]);
 
@@ -918,10 +920,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <button
             onClick={onClose}
             className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 text-xs font-medium rounded-lg border border-slate-200 shadow-2xs transition-colors cursor-pointer flex items-center gap-1.5"
-            title="退出后台，返回客户端界面"
+            title="退出管理员登录，返回首页"
           >
             <ChevronLeft className="w-3.5 h-3.5 text-slate-400" />
-            <span>返回前台</span>
+            <span>退出登录</span>
           </button>
         </div>
       </header>
@@ -1286,7 +1288,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           tags: [],
                           searchCount: 500,
                           systemPrompt: '你是一位深度理解原著的导师。',
-                          bookContent: '',
                           skillType: 'book',
                         });
                         setIsSkillModalOpen(true);
@@ -1302,7 +1303,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <table className="w-full text-left text-xs border-collapse table-fixed">
                       <thead className="bg-slate-50/70 border-b border-slate-200/80 text-slate-500 font-medium">
                         <tr>
-                          <th className="py-2.5 px-4 font-medium w-auto">书名 / 作者</th>
+                          <th className="py-2.5 px-4 font-medium w-auto">{skillTypeFilter === 'mentor' ? '导师' : '书名 / 作者'}</th>
                           <th className="py-2.5 px-4 font-medium w-24">类型</th>
                           <th className="py-2.5 px-4 font-medium w-40">分类标签</th>
                           <th className="py-2.5 px-4 font-medium w-28">热度指数</th>
@@ -1322,7 +1323,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               <td className="py-3 px-4">
                                 <div className="min-w-0 flex items-center gap-2 truncate">
                                   <span className="font-medium text-slate-900 truncate">{s.title}</span>
-                                  {s.author && <span className="text-[11px] text-slate-400 shrink-0 font-normal">/ {s.author}</span>}
+                                  {(s.skillType || 'book') !== 'mentor' && s.author && <span className="text-[11px] text-slate-400 shrink-0 font-normal">/ {s.author}</span>}
                                 </div>
                               </td>
                               <td className="py-3 px-4 whitespace-nowrap">

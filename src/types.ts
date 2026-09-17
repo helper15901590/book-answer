@@ -23,7 +23,6 @@ export interface MembershipPlanConfig {
 
 export interface UserProfile {
   id: string;
-  unionId: string;
   phone?: string;
   password?: string;
   nickname: string;
@@ -55,10 +54,6 @@ export interface Skill {
   description: string;
   tags: string[];
   systemPrompt: string;
-  catalogContent?: string;
-  bookContent?: string;
-  tokenCount?: number;
-  preferredModel?: string;
   chatCount?: number;
   searchCount?: number;
   hotScore?: number;
@@ -166,7 +161,6 @@ export interface OrderLog {
   id: string;
   tradeNo: string;
   userId: string;
-  unionId?: string;
   skillId?: string;
   skillTitle?: string;
   planType?: OrderPlanType;

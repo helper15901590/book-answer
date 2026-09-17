@@ -21,7 +21,7 @@ export async function generateRecommendedQuestionsFromLLM({
     return [];
   }
 
-  const docSnippet = (systemPrompt || '').slice(0, 4000);
+  const docContent = (systemPrompt || '').trim();
   const cleanTitle = cleanBookTitle(title || '本书');
   const authorStr = author ? `【作者】：${author}\n` : '';
 
@@ -30,7 +30,7 @@ export async function generateRecommendedQuestionsFromLLM({
 
 【书名】：${cleanTitle}
 ${authorStr}【Skill 原著文档内容】：
-${docSnippet}
+${docContent}
 
 【任务要求】：
 请根据该文档中实际包含的核心概念、独特论点、关键案例或思维模型，提炼生成 3 到 4 个最切中原著精髓、最引人入胜、最具启发性且紧密贴合本书独特内容的读者“推荐追问”（引导性问题）。

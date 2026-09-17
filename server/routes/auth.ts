@@ -12,7 +12,7 @@ import {
 } from '../middleware/auth.js';
 import { PASSWORD_CHANGE_COOKIE, CHALLENGE_TTL_MS, COOKIE_SECURE } from '../config.js';
 import { sha256 } from '../services/security.js';
-import { USER_PASSWORD_MIN_LENGTH, validateStrongPassword } from '../services/password.js';
+import { BCRYPT_ROUNDS, USER_PASSWORD_MIN_LENGTH, validateStrongPassword } from '../services/password.js';
 import { asyncJsonHandler } from '../middleware/asyncHandler.js';
 
 const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '尝试过于频繁，请稍后再试' } });
@@ -25,14 +25,16 @@ function genericLoginFailure(res: Response): void {
 }
 
 export function registerAuthRoutes(app: Express): void {
-  app.post('/api/auth/login', authLimiter, (req, res) => {
+  // 必须用异步版 bcrypt：compareSync 会占死事件循环整个哈希时长（成本 10 约 60ms），
+  // 集中登录时所有其他请求都会被卡住。
+  app.post('/api/auth/login', authLimiter, asyncJsonHandler(async (req, res) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) return genericLoginFailure(res);
     const { phone, password } = parsed.data;
     const user = db.getUserByPhone(phone);
     if (!user || !user.password || user.status === 'disabled' || user.status === 'deleted') return genericLoginFailure(res);
     if (db.isUserLocked(user)) return res.status(423).json({ error: 'ACCOUNT_LOCKED', message: '账号暂时锁定，请 15 分钟后重试' });
-    if (!bcrypt.compareSync(password, user.password)) {
+    if (!(await bcrypt.compare(password, user.password))) {
       db.recordLoginFailure(user.id);
       return genericLoginFailure(res);
     }
@@ -49,7 +51,7 @@ export function registerAuthRoutes(app: Express): void {
     createUserSession(req, res, user.id);
     db.audit({ actorType: 'user', actorId: user.id, action: 'login_success', ip: req.ip, userAgent: req.get('user-agent') || undefined });
     return res.json({ success: true, user: sanitizeUser({ ...user, mustChangePassword: false }) });
-  });
+  }));
 
   // 仅服务于「首次登录强制改密」：必须携带登录时下发的改密凭证。
   // 登录态下的自助改密入口已移除，本接口不再接受已建立会话的请求。
@@ -64,12 +66,12 @@ export function registerAuthRoutes(app: Express): void {
     if (!challenge || challenge.usedAt || new Date(challenge.expiresAt).getTime() <= Date.now()) return res.status(401).json({ error: 'CHALLENGE_EXPIRED', message: '改密会话已过期，请重新登录' });
     const user = db.getUserById(challenge.subjectId);
 
-    if (!user || !user.password || !bcrypt.compareSync(currentPassword, user.password)) return genericLoginFailure(res);
+    if (!user || !user.password || !(await bcrypt.compare(currentPassword, user.password))) return genericLoginFailure(res);
     const policyError = validateStrongPassword(newPassword, USER_PASSWORD_MIN_LENGTH, user.phone, false);
     if (policyError) return res.status(400).json({ error: 'INVALID_PASSWORD', message: policyError });
-    if (bcrypt.compareSync(newPassword, user.password)) return res.status(400).json({ error: 'PASSWORD_REUSED', message: '新密码不能与当前密码相同' });
+    if (await bcrypt.compare(newPassword, user.password)) return res.status(400).json({ error: 'PASSWORD_REUSED', message: '新密码不能与当前密码相同' });
 
-    db.updateUserPassword(user.id, await bcrypt.hash(newPassword, 12));
+    db.updateUserPassword(user.id, await bcrypt.hash(newPassword, BCRYPT_ROUNDS));
     db.revokeUserSessions(user.id);
     db.markAuthChallengeUsed(challenge.id);
     res.clearCookie(PASSWORD_CHANGE_COOKIE, COOKIE_BASE);

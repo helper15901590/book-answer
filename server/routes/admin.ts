@@ -19,7 +19,7 @@ import {
   sanitizeUser,
 } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
-import { ADMIN_PASSWORD_MIN_LENGTH, generateTemporaryPassword, validateStrongPassword } from '../services/password.js';
+import { ADMIN_PASSWORD_MIN_LENGTH, BCRYPT_ROUNDS, generateTemporaryPassword, validateStrongPassword } from '../services/password.js';
 import { asyncJsonHandler } from '../middleware/asyncHandler.js';
 import { decryptSecret, encryptSecret, generateRecoveryCodes, generateTotpSetup, generateUserId, hmac, randomToken, safeEqual, sha256, verifyTotp } from '../services/security.js';
 import { MembershipTier, UserProfile, cleanBookTitle, AdminSecurityRecord, membershipExpiryFromNow, tierDailyLimit } from '../../src/types.js';
@@ -205,9 +205,8 @@ export function registerAdminRoutes(app: Express): void {
     const dailyLimit = tierDailyLimit(db.getLLMConfig(), membershipTier);
     const user: UserProfile = {
       id: generateUserId(),
-      unionId: `union_${crypto.randomUUID()}`,
       phone,
-      password: await bcrypt.hash(temporaryPassword, 12),
+      password: await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS),
       nickname: phone.slice(-4),
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&h=120&q=80',
       role: 'member',
@@ -229,7 +228,7 @@ export function registerAdminRoutes(app: Express): void {
     const user = db.getUserById(String(req.body?.userId || ''));
     if (!user) return res.status(404).json({ error: 'NOT_FOUND', message: '用户不存在' });
     const temporaryPassword = generateTemporaryPassword();
-    user.password = await bcrypt.hash(temporaryPassword, 12);
+    user.password = await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS);
     user.mustChangePassword = true;
     user.status = 'active';
     db.revokeUserSessions(user.id);
@@ -361,10 +360,6 @@ export function registerAdminRoutes(app: Express): void {
       coverUrl: String(input.coverUrl || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'),
       tags: validTags,
       systemPrompt: String(input.systemPrompt || ''),
-      catalogContent: String(input.catalogContent || ''),
-      bookContent: String(input.bookContent || ''),
-      tokenCount: Number(input.tokenCount) || 12000,
-      preferredModel: String(input.preferredModel || 'deepseek-chat'),
       sampleQuestions: Array.isArray(input.sampleQuestions) ? input.sampleQuestions.map(String).slice(0, 6) : [],
       chatCount: Number(input.chatCount) || 0,
       searchCount: Number(input.searchCount) || 0,

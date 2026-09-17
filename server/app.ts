@@ -55,7 +55,10 @@ export async function createApp() {
       uptimeSeconds: Math.floor((Date.now() - metrics.startTime) / 1000),
     });
   });
-  app.use(rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false }));
+  // 只对 /api 计数：静态资源不消耗额度。此前挂在全局，一次页面加载的十几个 JS/CSS/图片请求
+  // 都计入这 300 次/分钟，同一出口 IP 下的用户（公司、学校网络）会互相挤掉额度。
+  // /api/health 注册在本行之前，仍不受限流影响，探针不会被误杀。
+  app.use('/api', rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false }));
   app.use(express.json({ limit: '5mb' }));
   app.use(cookieParser());
   app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/api/health' } }));

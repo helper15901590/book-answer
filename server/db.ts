@@ -76,6 +76,9 @@ export class CommercialSQLDatabase {
     fs.mkdirSync(path.join(DATA_DIR, 'backups'), { recursive: true });
     this.db = new Database(SQLITE_DB_PATH);
     this.db.pragma('journal_mode = WAL');
+    // WAL 下 NORMAL 仍是崩溃安全的（最坏只丢最近几个已提交事务，不会损坏库），但省掉每次提交的 fsync。
+    // 云 VPS 的网络盘上单次 fsync 成本高，这一项直接决定写入吞吐。
+    this.db.pragma('synchronous = NORMAL');
     this.db.pragma('busy_timeout = 5000');
     this.db.pragma('foreign_keys = ON');
     this.initializeSchema();
@@ -148,7 +151,6 @@ export class CommercialSQLDatabase {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
-        union_id TEXT UNIQUE,
         phone TEXT UNIQUE,
         password_hash TEXT,
         nickname TEXT NOT NULL,
@@ -178,10 +180,6 @@ export class CommercialSQLDatabase {
         cover_url TEXT,
         tags TEXT DEFAULT '[]',
         system_prompt TEXT,
-        catalog_content TEXT,
-        book_content TEXT,
-        token_count INTEGER DEFAULT 12000,
-        preferred_model TEXT DEFAULT 'deepseek-chat',
         sample_questions TEXT DEFAULT '[]',
         chat_count INTEGER DEFAULT 0,
         search_count INTEGER DEFAULT 0,
@@ -205,7 +203,6 @@ export class CommercialSQLDatabase {
         trade_no TEXT UNIQUE NOT NULL,
         transaction_id TEXT,
         user_id TEXT,
-        union_id TEXT,
         skill_id TEXT,
         skill_title TEXT,
         plan_type TEXT DEFAULT 'monthly',
@@ -308,8 +305,8 @@ export class CommercialSQLDatabase {
       const existing = this.db.prepare('SELECT id FROM skills WHERE id = ?').get(skill.id);
       if (!existing) {
         this.db.prepare(
-          `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`
+          `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, sample_questions, chat_count, search_count, skill_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`
         ).run(
           skill.id,
           skill.title,
@@ -319,10 +316,6 @@ export class CommercialSQLDatabase {
           skill.coverUrl,
           JSON.stringify(skill.tags || []),
           skill.systemPrompt || '',
-          skill.catalogContent || '',
-          skill.bookContent || '',
-          skill.tokenCount || 12000,
-          skill.preferredModel || 'deepseek-chat',
           JSON.stringify(skill.sampleQuestions || []),
           skill.skillType || 'book'
         );
@@ -366,7 +359,6 @@ export class CommercialSQLDatabase {
   private mapUserRowToProfile(row: any): UserProfile {
     return {
       id: row.id,
-      unionId: row.union_id || '',
       phone: row.phone || undefined,
       password: row.password_hash || undefined,
       nickname: row.nickname,
@@ -410,12 +402,12 @@ export class CommercialSQLDatabase {
     if (!this.db) return user;
     const now = new Date().toISOString();
     this.db.prepare(
-      `INSERT INTO users (id, union_id, phone, password_hash, nickname, avatar, role, status, membership_tier,
+      `INSERT INTO users (id, phone, password_hash, nickname, avatar, role, status, membership_tier,
         membership_expires_at, must_change_password, daily_max_chats, daily_used_count, last_active_date,
         last_active_month, failed_login_attempts, locked_until, last_login_at, created_at, updated_at, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
-        union_id=excluded.union_id, phone=excluded.phone, password_hash=excluded.password_hash,
+        phone=excluded.phone, password_hash=excluded.password_hash,
         nickname=excluded.nickname, avatar=excluded.avatar, role=excluded.role, status=excluded.status,
         membership_tier=excluded.membership_tier, membership_expires_at=excluded.membership_expires_at,
         must_change_password=excluded.must_change_password, daily_max_chats=excluded.daily_max_chats,
@@ -424,7 +416,6 @@ export class CommercialSQLDatabase {
         updated_at=excluded.updated_at, deleted_at=excluded.deleted_at`
     ).run(
       user.id,
-      user.unionId || null,
       user.phone || null,
       user.password || null,
       user.nickname,
@@ -567,10 +558,6 @@ export class CommercialSQLDatabase {
       coverUrl: obj.cover_url,
       tags: typeof obj.tags === 'string' ? JSON.parse(obj.tags || '[]') : obj.tags,
       systemPrompt: obj.system_prompt || '',
-      catalogContent: obj.catalog_content || '',
-      bookContent: obj.book_content || '',
-      tokenCount: obj.token_count,
-      preferredModel: obj.preferred_model,
       sampleQuestions: typeof obj.sample_questions === 'string' ? JSON.parse(obj.sample_questions || '[]') : obj.sample_questions,
       chatCount: obj.chat_count,
       searchCount: obj.search_count,
@@ -597,17 +584,15 @@ export class CommercialSQLDatabase {
   public saveSkill(skill: Skill): Skill {
     if (!this.db) return skill;
     this.db.prepare(
-      `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, catalog_content, book_content, token_count, preferred_model, sample_questions, chat_count, search_count, skill_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO skills (id, title, author, description, category, cover_url, tags, system_prompt, sample_questions, chat_count, search_count, skill_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET title=excluded.title, author=excluded.author, description=excluded.description,
        category=excluded.category, cover_url=excluded.cover_url, tags=excluded.tags, system_prompt=excluded.system_prompt,
-       catalog_content=excluded.catalog_content, book_content=excluded.book_content, token_count=excluded.token_count,
-       preferred_model=excluded.preferred_model, sample_questions=excluded.sample_questions, chat_count=excluded.chat_count,
+       sample_questions=excluded.sample_questions, chat_count=excluded.chat_count,
        search_count=excluded.search_count, skill_type=excluded.skill_type`
     ).run(
       skill.id, skill.title, skill.author, skill.description || '', skill.category, skill.coverUrl,
-      JSON.stringify(skill.tags || []), skill.systemPrompt || '', skill.catalogContent || '', skill.bookContent || '',
-      skill.tokenCount || 12000, skill.preferredModel || 'deepseek-chat', JSON.stringify(skill.sampleQuestions || []),
+      JSON.stringify(skill.tags || []), skill.systemPrompt || '', JSON.stringify(skill.sampleQuestions || []),
       skill.chatCount || 0, skill.searchCount || 0, skill.skillType || 'book'
     );
     return skill;
@@ -882,7 +867,7 @@ export class CommercialSQLDatabase {
     query += ' ORDER BY created_at DESC';
     const rows = this.db.prepare(query).all(...params) as any[];
     return rows.map((row) => ({
-      id: row.id, tradeNo: row.trade_no, userId: row.user_id, unionId: row.union_id || undefined,
+      id: row.id, tradeNo: row.trade_no, userId: row.user_id,
       skillId: row.skill_id || undefined, skillTitle: row.skill_title || undefined, planType: row.plan_type || 'monthly',
       planName: row.plan_name || '月度会员', amount: Number(row.amount), type: row.type || 'membership',
       paymentMethod: row.payment_method || 'wechat', status: row.status || 'pending', paidAt: row.paid_at || undefined,
@@ -894,11 +879,55 @@ export class CommercialSQLDatabase {
     this.db?.prepare('DELETE FROM orders').run();
   }
 
+  // 后台统计只需要「条数」与「按天分布」，不需要消息正文。
+  // 原实现把全部会话连同每条消息 JSON.parse 进 JS 再遍历，成本随历史线性增长
+  // （500 用户 / 6 万条消息实测约 366ms，而后台面板每 30 秒轮询一次）。
+  // 这里改用 SQLite 的 JSON 函数在原地聚合，消息正文不再进入 JS 堆。
+  public getChatStatsSummary(): {
+    totalSessions: number;
+    todaySessions: number;
+    totalMessages: number;
+    todayMessages: number;
+    dailyMessages: { date: string; count: number }[];
+  } {
+    const today = getTodayString();
+    const days = lastNDays(14);
+    const dayCounts = new Map<string, number>();
+    if (!this.db) return { totalSessions: 0, todaySessions: 0, totalMessages: 0, todayMessages: 0, dailyMessages: days.map((date) => ({ date, count: 0 })) };
+
+    const count = (sql: string, ...params: unknown[]): number => Number((this.db!.prepare(sql).get(...(params as any[])) as any)?.c || 0);
+
+    const totalSessions = count('SELECT COUNT(*) AS c FROM chat_sessions');
+    const todaySessions = count("SELECT COUNT(*) AS c FROM chat_sessions WHERE date(created_at, 'localtime') = ?", today);
+    const totalMessages = count('SELECT COALESCE(SUM(json_array_length(messages)), 0) AS c FROM chat_sessions WHERE json_valid(messages)');
+
+    // json_valid 兜底：messages 若不是合法 JSON 数组，json_each 会直接抛错；损坏的行按空数组处理。
+    const rows = this.db.prepare(
+      `SELECT date(json_extract(m.value, '$.timestamp'), 'localtime') AS day, COUNT(*) AS c
+       FROM chat_sessions s, json_each(CASE WHEN json_valid(s.messages) THEN s.messages ELSE '[]' END) m
+       GROUP BY day`
+    ).all() as any[];
+    let todayMessages = 0;
+    for (const row of rows) {
+      if (!row.day) continue;
+      if (row.day === today) todayMessages = Number(row.c);
+      dayCounts.set(row.day, Number(row.c));
+    }
+
+    return {
+      totalSessions,
+      todaySessions,
+      totalMessages,
+      todayMessages,
+      dailyMessages: days.map((date) => ({ date, count: dayCounts.get(date) || 0 })),
+    };
+  }
+
   public getAdminStats() {
     const users = this.getUsers();
     const skills = this.getSkills();
     const orders = this.getOrders();
-    const sessions = this.getChatSessions();
+    const chatStats = this.getChatStatsSummary();
     const totalRevenue = orders.filter((order) => order.status === 'success').reduce((sum, order) => sum + (Number(order.amount) || 0), 0);
     const tierCounts = { free_member: 0, monthly_member: 0, quarterly_member: 0, yearly_member: 0 } as Record<string, number>;
     let activeVipUsers = 0;
@@ -934,15 +963,11 @@ export class CommercialSQLDatabase {
       }
     });
 
-    sessions.forEach((session) => {
-      totalMessages += (session.messages || []).length;
-      if (toLocalDateString(session.createdAt) === today) todaySessions++;
-      (session.messages || []).forEach((message) => {
-        const date = toLocalDateString(message.timestamp);
-        if (date === today) todayMessages++;
-        const index = date ? dayIndex.get(date) : undefined;
-        if (index !== undefined) dailyMessages[index].count++;
-      });
+    totalMessages = chatStats.totalMessages;
+    todaySessions = chatStats.todaySessions;
+    todayMessages = chatStats.todayMessages;
+    chatStats.dailyMessages.forEach((entry, index) => {
+      dailyMessages[index].count = entry.count;
     });
 
     return {
@@ -961,7 +986,7 @@ export class CommercialSQLDatabase {
       totalOrders: orders.length,
       totalPaidOrders: orders.filter((order) => order.status === 'success').length,
       totalRevenue: Number(totalRevenue.toFixed(2)),
-      totalChatSessions: sessions.length,
+      totalChatSessions: chatStats.totalSessions,
       todaySessions,
       totalMessages,
       todayMessages,

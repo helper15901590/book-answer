@@ -6,6 +6,11 @@ export const USER_PASSWORD_MIN_LENGTH = 6;
 export const ADMIN_PASSWORD_MIN_LENGTH = 16;
 export const TEMPORARY_PASSWORD_LENGTH = 16;
 
+// 口令哈希成本因子。12 轮在纯 JS 的 bcryptjs 下实测约 226ms，且同步调用会整体阻塞事件循环——
+// 上线首日数百人集中首次登录时，服务会在这 226ms 窗口内对所有人完全无响应。10 轮实测约 61ms，
+// CPU 降至四分之一，对密码哈希仍是足够强度。已有哈希不受影响：验证时按各自存储的成本因子进行。
+export const BCRYPT_ROUNDS = 10;
+
 const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const LOWER = 'abcdefghijkmnopqrstuvwxyz';
 const DIGITS = '23456789';

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Languages } from 'lucide-react';
+import { Globe } from 'lucide-react';
 import { LOCALES, useI18n, type Locale } from '../i18n';
 
 // 语言名一律用「该语言自己的写法」，不随界面语言翻译：
@@ -19,10 +19,11 @@ export const LanguageSwitcher: React.FC = () => {
       <button
         type="button"
         onClick={() => setIsOpen((v) => !v)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white hover:bg-gray-50 border border-gray-300 shadow-2xs cursor-pointer text-xs font-medium text-gray-700 transition-colors"
+        title={LOCALE_LABEL[locale]}
+        aria-label={LOCALE_LABEL[locale]}
+        className="flex items-center justify-center p-1.5 rounded-full text-gray-500 hover:text-gray-900 hover:bg-gray-100 cursor-pointer transition-colors"
       >
-        <Languages className="w-3.5 h-3.5 text-gray-500" />
-        <span>{LOCALE_LABEL[locale]}</span>
+        <Globe className="w-4 h-4" />
       </button>
       {isOpen && (
         <>

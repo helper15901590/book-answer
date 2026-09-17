@@ -29,7 +29,6 @@ export interface AuthRequest extends Request {
 export function buildAdminProfile(): UserProfile {
   return {
     id: ADMIN_ACCOUNT_ID,
-    unionId: 'union_admin_backend',
     nickname: '管理员',
     avatar: '',
     phone: ADMIN_PHONE || undefined,

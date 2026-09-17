@@ -182,7 +182,7 @@ docker compose -f docker/compose.yaml config
 验收要求：
 
 - 未登录访问聊天、会话 API 返回 401
-- 公开技能接口不含 `systemPrompt`、`bookContent`、`catalogContent`
+- 公开技能接口不含 `systemPrompt`
 - 用户无法读取、续写或删除他人会话
 - 管理员必须完成 TOTP，恢复码只能使用一次
 - 改密或禁用后旧会话立即失效

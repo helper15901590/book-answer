@@ -38,7 +38,6 @@ describe('commercial MVP API', () => {
     const response = await request(app).get('/api/skills').expect(200);
     expect(response.body.skills.length).toBeGreaterThan(0);
     expect(response.body.skills[0]).not.toHaveProperty('systemPrompt');
-    expect(response.body.skills[0]).not.toHaveProperty('bookContent');
   });
 
   it('requires login for chat sessions and ignores client user IDs', async () => {
