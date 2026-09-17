@@ -12,6 +12,18 @@ services:
       DATA_DIR: /app/data
       # 配额日界/月界以服务器本地时区为准：固定北京时间，与前台「每日零点刷新」文案一致（镜像默认 UTC）
       TZ: Asia/Shanghai
+      # 2 核 2G 实例：把堆上限压在容器内存限额之下，让 V8 提前 GC，
+      # 而不是等内核 OOM-kill 把容器直接杀掉重启。
+      NODE_OPTIONS: "--max-old-space-size=768"
+    # 针对 2 核 2G 实例的内存上限：Node 与其他服务共用一台机器，
+    # 不设限时单个容器可以把宿主机内存吃光，连带把 SQLite 的页缓存挤掉。
+    # 构建阶段不受此限制，镜像构建仍需 swap（见部署文档）。
+    mem_limit: 1024m
+    # SSE 长连接会占用文件描述符；50 并发对话下默认 1024 太紧。
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
     logging:
@@ -33,6 +45,8 @@ services:
     image: caddy:2
     profiles: ["https"]
     restart: unless-stopped
+    # 反向代理本身很轻，给个上限防止异常时无限增长
+    mem_limit: 128m
     depends_on:
       app:
         condition: service_healthy
