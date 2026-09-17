@@ -581,6 +581,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setTimeout(() => setSuccessMsg(''), 2500);
   };
 
+  // 热度是活的排名指标：用户在前台每次点击都会让服务端自增（/api/skills/:id/click）。
+  // 弹窗里的数值只是打开那一刻的快照，弹窗开着的期间库里的值可能已经涨了。
+  // 这个同步按钮让管理员在决定要不要改它之前，先看到真实数字。
+  const [refreshingHeat, setRefreshingHeat] = useState(false);
+  const handleRefreshHeat = async () => {
+    const skillId = editingSkill?.id;
+    if (!skillId) return;
+    setRefreshingHeat(true);
+    try {
+      const res = await fetch(`/api/skills/${skillId}`);
+      const data = await res.json().catch(() => ({}));
+      const latest = data?.skill?.searchCount;
+      if (typeof latest !== 'number') throw new Error('unexpected payload');
+      setEditingSkill((prev) => (prev ? { ...prev, searchCount: latest } : null));
+      // 基准值一起更新：刚同步到的数字并未被管理员改动，保存时不应回传。
+      setSkillSearchCountAtOpen(latest);
+      showToast('已同步最新热度');
+    } catch {
+      showToast('同步热度失败，请重试');
+    } finally {
+      setRefreshingHeat(false);
+    }
+  };
+
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
 
   const handleGenerateQuestionsForSkill = async (
@@ -2534,7 +2558,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
 
               <div>
-                <label className="block font-medium text-slate-700 mb-1">热度/搜索数</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block font-medium text-slate-700">热度/搜索数</label>
+                  {editingSkill.id && (
+                    <button
+                      type="button"
+                      onClick={handleRefreshHeat}
+                      disabled={refreshingHeat}
+                      title="热度会随用户点击实时累加，弹窗里的数值可能已经过期"
+                      className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-900 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${refreshingHeat ? 'animate-spin' : ''}`} />
+                      同步最新
+                    </button>
+                  )}
+                </div>
                 <input
                   type="number"
                   value={editingSkill.searchCount ?? 500}
