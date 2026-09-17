@@ -15,6 +15,7 @@
     "config:check": "cross-env NODE_ENV=test tsx scripts/check-config.ts",
     "db:reset-accounts": "tsx scripts/reset-accounts.ts",
     "admin:mfa-reset": "tsx scripts/reset-admin-mfa.ts",
+    "agreements:sync": "tsx scripts/sync-agreements.ts",
     "load:test": "tsx scripts/load-test.ts",
     "audit:prod": "npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org",
     "verify": "npm run lint && npm run test && npm run build && npm run audit:prod && npm run config:check"

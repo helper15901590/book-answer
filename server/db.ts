@@ -653,6 +653,14 @@ export class CommercialSQLDatabase {
     if (!this.db) return config;
     const current = this.getLLMConfig();
     const next = sanitizeLLMConfigForStorage({ ...current, ...config });
+    // 协议正文变更时自动刷新生效日期。此前 updatedAt 只会沿用旧值，
+    // 即便改过协议，用户端显示的「生效日期」也永远停在首次写入的那一天。
+    const prevAgreements = current.agreements;
+    if (next.agreements && (!prevAgreements
+      || prevAgreements.userAgreementContent !== next.agreements.userAgreementContent
+      || prevAgreements.privacyPolicyContent !== next.agreements.privacyPolicyContent)) {
+      next.agreements.updatedAt = getTodayString();
+    }
     const key = apiKey === undefined ? current.apiKey : apiKey;
     next.apiKey = key ? encryptSecret(key) : '';
     next.deepseekApiKey = '';
