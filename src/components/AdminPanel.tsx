@@ -2273,15 +2273,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </div>
 
                     <div>
-                      <label className="block text-slate-700 font-medium text-xs mb-1.5">API 接口密钥 (API Key)</label>
+                      <label className="block text-slate-700 font-medium text-xs mb-1.5">
+                        API 接口密钥 (API Key)
+                        {llmConfig.apiKeyConfigured && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            已配置
+                          </span>
+                        )}
+                      </label>
                       <input
                         type="password"
                         value={llmConfig.apiKey ?? ''}
                         onChange={(e) => setLlmConfig({ ...llmConfig, apiKey: e.target.value })}
-                        placeholder="sk-********************************"
+                        placeholder={llmConfig.apiKeyConfigured ? '如需更换请填写新密钥，留空则保持不变' : '请填写 API Key'}
                         className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
                       />
-                      <p className="text-[11px] text-slate-400 mt-1">服务器安全存储与使用，不向前端泄露</p>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        {llmConfig.apiKeyConfigured
+                          ? '密钥已加密保存在服务器，出于安全不会再回显到页面上——输入框为空属正常现象，不是丢失。'
+                          : '服务器安全存储与使用，不向前端泄露'}
+                      </p>
                     </div>
                   </div>
 

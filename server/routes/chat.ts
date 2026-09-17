@@ -58,7 +58,10 @@ function resolveSession(sessionId: string, userId: string, skillId?: string): { 
     updatedAt: new Date().toISOString(),
     messages: [],
   };
-  db.saveChatSession(created);
+  // 这里刻意不落库：调用方还要经过「模型是否已配置」「配额是否用尽」等校验，
+  // 若提前写入，被拒绝的请求会留下一条消息数为 0 的空会话；
+  // 用户之后点开同一本书时前端会优先复用该会话，于是看到一片空白（既无问好也无推荐问题）。
+  // 落库交给调用方在真正追加首条消息时完成。
   return { session: created };
 }
 

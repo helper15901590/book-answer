@@ -4,8 +4,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     fileParallelism: false,
-    // 首次在新机器上运行时 Vite 依赖需冷启动编译，超过 vitest 默认的 10 秒钩子超时
-    hookTimeout: 30000,
+    // 首次在新机器上运行时 Vite 依赖需冷启动编译，超过 vitest 默认的 10 秒钩子超时；
+    // 改动较多文件后的第一次运行同样会明显变慢，故留足余量。
+    hookTimeout: 60000,
     env: {
       NODE_ENV: 'test',
       APP_ORIGIN: 'http://127.0.0.1:3000',

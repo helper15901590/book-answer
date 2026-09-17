@@ -127,8 +127,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         .then((data) => {
           if (Array.isArray(data.sessions)) {
             setSessions(data.sessions);
-            if (data.sessions.length > 0) {
-              setActiveSessionId(data.sessions[0].id);
+            // 跳过消息数为 0 的空会话，否则刷新后会自动打开一片空白的对话页
+            const firstWithMessages = data.sessions.find((s: ChatSession) => (s.messages || []).length > 0);
+            if (firstWithMessages) {
+              setActiveSessionId(firstWithMessages.id);
               setMainView('chat');
             } else {
               setActiveSessionId(null);
@@ -416,7 +418,9 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     if (!user) { onOpenLogin(); return; }
 
     const existing = sessions.find((s) => s.skillId === skill.id);
-    if (existing) {
+    // 只有「已有消息」的历史会话才直接复用；消息数为 0 的空会话要按新会话处理，
+    // 否则点开就是一片空白——既没有 AI 问好也没有推荐问题
+    if (existing && existing.messages.length > 0) {
       setActiveSessionId(existing.id);
     } else {
       const initialQuestions = skill.sampleQuestions && skill.sampleQuestions.length > 0
@@ -424,7 +428,8 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         : generateFollowUpQuestions('', '', skill);
 
       const newSession: ChatSession = {
-        id: `session-${skill.id}-${Date.now()}`,
+        // 复用空会话的 id，避免再留下一条垃圾记录
+        id: existing?.id ?? `session-${skill.id}-${Date.now()}`,
         skillId: skill.id,
         skillTitle: skill.title,
         skillAuthor: skill.author,
@@ -443,7 +448,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           },
         ],
       };
-      setSessions((prev) => [newSession, ...prev]);
+      setSessions((prev) => [newSession, ...prev.filter((s) => s.id !== newSession.id)]);
       setActiveSessionId(newSession.id);
     }
     setMainView('chat');
