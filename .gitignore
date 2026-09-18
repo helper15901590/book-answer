@@ -1,11 +1,18 @@
 node_modules/
 build/
 dist/
+dist-server/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
 # 数据库含用户凭据，严禁入库；运行数据统一落 data/
-commercial.sqlite
-data/
+commercial.sqlite*
+/data/
+# 会话工作区（SDD 台账、交接记录等），仅本地，严禁入库
+.superpowers/
+
+# local verification databases
+.test-runtime/
+.config-check-runtime/
