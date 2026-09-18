@@ -145,6 +145,12 @@ BASE_URL=http://公网IP:3000/api/health CONNECTIONS=50 DURATION=30 npm run load
 
 - 变量名是 `BASE_URL` / `ADMIN_PASSWORD`（不是 `BASE` / `ADMIN_CODE`）。少了管理员密码，脚本会打印 `SKIP admin chain` 并照常报「通过」——后台登录、建号、清理整条链路其实一条都没验证。
 - `BASE_URL` 必须与 `.env` 里的 `APP_ORIGIN` **完全一致**（含协议与端口）。脚本里的写操作会带 `Origin` 头，与 `APP_ORIGIN` 不符会被 CSRF 来源校验拒绝。
+- **在服务器本机执行时**，`BASE_URL` 要用 `http://127.0.0.1:3000`，同时用 `ORIGIN` 传入与 `APP_ORIGIN` 一致的公网地址。原因是云主机的公网 IP 走 NAT 映射，实例从内部访问自己的公网 IP 会超时（无 hairpin NAT），日志里表现为 `actual=000`：
+
+  ```bash
+  set -a && . ./.env && set +a
+  BASE_URL=http://127.0.0.1:3000 ORIGIN="$APP_ORIGIN" ADMIN_TOTP_CODE=当前6位码 bash scripts/smoke.sh
+  ```
 
 已启用动态验证码时再加 `ADMIN_TOTP_CODE=认证器当前 6 位码`。走 HTTPS 时把 `http://公网IP:3000` 换成 `https://域名`。
 
