@@ -9,30 +9,33 @@ const LOCALE_LABEL: Record<Locale, string> = {
   en: 'English',
 };
 
-// 收起态只显示当前语言的缩写，比图标更直接，也不再占一个图标的宽度。
-// 完整名称保留在下拉项与 title/aria-label 里，看不懂缩写时悬停或展开即可看到全称。
-const LOCALE_SHORT: Record<Locale, string> = {
-  'zh-CN': '简',
-  'zh-TW': '繁',
-  en: 'En',
+// 收起态显示的是「点它能切到哪种语言」，而不是当前语言：中文界面显示 En，英文界面显示 中。
+// 当前语言的完整名称仍保留在 title / aria-label 与下拉项里。
+const LOCALE_SWITCH_LABEL: Record<Locale, string> = {
+  'zh-CN': 'En',
+  'zh-TW': 'En',
+  en: '中',
 };
 
 export const LanguageSwitcher: React.FC = () => {
   const { locale, setLocale } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
+  // 按钮上的缩写指向「要切到的语言」，悬停提示得把这层关系讲清楚：
+  // 否则按钮写着 En、悬停却显示「简体中文」，会让人以为哪一边错了。
+  const switchTo: Locale = locale === 'en' ? 'zh-CN' : 'en';
 
   return (
     <div className="relative">
       <button
         type="button"
         onClick={() => setIsOpen((v) => !v)}
-        title={LOCALE_LABEL[locale]}
+        title={`${LOCALE_LABEL[locale]} → ${LOCALE_LABEL[switchTo]}`}
         aria-label={LOCALE_LABEL[locale]}
         aria-haspopup="menu"
         aria-expanded={isOpen}
         className="flex items-center justify-center min-w-7 h-7 px-1.5 rounded-full text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 cursor-pointer transition-colors"
       >
-        {LOCALE_SHORT[locale]}
+        {LOCALE_SWITCH_LABEL[locale]}
       </button>
       {isOpen && (
         <>
