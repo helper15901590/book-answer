@@ -700,8 +700,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         // 4xx 的响应体也会正常解析成 JSON，不处理就会出现「点了保存、弹窗不动也没提示」
         showToast(data.message || data.error || '保存失败，请重试');
       }
-    } catch (e) {
-      alert('保存失败，请检查网络');
+    } catch {
+      // ensureAdminAuthorized 在会话失效时已触发 reload 并抛错，这里只兜网络类错误。
+      // 用 showToast 而非 alert：alert 是阻塞的，会挡住那次跳转，且「请检查网络」
+      // 对「会话失效」这个真实原因是误导。同文件的 handleUpdateUser 也是这个写法。
+      showToast('保存失败，请检查网络');
     }
   };
 

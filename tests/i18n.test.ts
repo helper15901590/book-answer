@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { dictionaries } from '../src/i18n/locales';
 import { LOCALES } from '../src/i18n/types';
+import { DELETE_ACCOUNT_PHRASES } from '../src/i18n/deleteAccountPhrase';
 
 // 递归收集所有叶子键路径
 function leafPaths(node: unknown, prefix = ''): string[] {
@@ -47,5 +48,15 @@ describe('多语言字典一致性', () => {
         ).toEqual(placeholders(valueAt(dictionaries['zh-CN'], path)));
       }
     }
+  });
+
+  // 服务端接受的注销短语是一份手工维护的常量数组，类型系统管不到它：
+  // 新增语言时字典会被 lint 强制补齐，但没人会想起还要往数组里加一条，
+  // 结果该语言的用户会永久收到 CONFIRMATION_MISMATCH 而无法注销，且 CI 全绿。
+  it('服务端接受的注销短语与三份字典逐条对应', () => {
+    const fromDictionaries = LOCALES.map((locale) => dictionaries[locale].workspace.deleteAccountPhrase);
+    expect([...DELETE_ACCOUNT_PHRASES].sort(), 'DELETE_ACCOUNT_PHRASES 与字典中的短语不一致').toEqual(
+      [...fromDictionaries].sort()
+    );
   });
 });

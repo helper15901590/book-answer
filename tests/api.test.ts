@@ -14,19 +14,21 @@ let userAgent: any;
 let userCsrf = '';
 const userPassword = 'UserStrongPass123';
 
-function cookieValue(response: request.Response, name: string): string {
+// 取出响应里指定名字的 Set-Cookie 原始头，找不到返回空串。
+function setCookieHeader(response: request.Response, name: string): string {
   const header = response.headers['set-cookie'];
   const values = Array.isArray(header) ? header : header ? [header] : [];
-  const item = values.find((value: string) => value.startsWith(`${name}=`));
+  return values.find((value: string) => value.startsWith(`${name}=`)) || '';
+}
+
+function cookieValue(response: request.Response, name: string): string {
+  const item = setCookieHeader(response, name);
   return item ? item.split(';')[0].slice(name.length + 1) : '';
 }
 
 // 取某个 Cookie 的 Max-Age；会话级 Cookie（不带 Max-Age）返回 0。
 function cookieMaxAge(response: request.Response, name: string): number {
-  const header = response.headers['set-cookie'];
-  const values = Array.isArray(header) ? header : header ? [header] : [];
-  const item = values.find((value: string) => value.startsWith(`${name}=`));
-  const match = item?.match(/Max-Age=(\d+)/);
+  const match = setCookieHeader(response, name).match(/Max-Age=(\d+)/);
   return match ? Number(match[1]) : 0;
 }
 
@@ -146,6 +148,14 @@ describe('commercial MVP API', () => {
     const csrfMaxAge = cookieMaxAge(changed, 'book_answer_user_csrf');
     expect(csrfMaxAge).toBe(sessionMaxAge);
     expect(csrfMaxAge).toBeGreaterThan(0);
+
+    // 管理员端走的是同一个 setCsrfCookie，也断言一次：否则将来只改回一边也不会有测试报错。
+    const admin = request.agent(app);
+    await admin.post('/api/admin/login').set('Origin', 'http://127.0.0.1:3000').send({ phone: '13800000000', password: 'AdminPass12345678!' }).expect(200);
+    const adminVerify = await admin.post('/api/admin/mfa/verify').set('Origin', 'http://127.0.0.1:3000').send({ code: generateSync({ secret: adminTotpSecret }) }).expect(200);
+    const adminCsrfMaxAge = cookieMaxAge(adminVerify, 'book_answer_admin_csrf');
+    expect(adminCsrfMaxAge).toBe(cookieMaxAge(adminVerify, 'book_answer_admin_session'));
+    expect(adminCsrfMaxAge).toBeGreaterThan(0);
 
     const csrf = cookieValue(changed, 'book_answer_user_csrf');
 

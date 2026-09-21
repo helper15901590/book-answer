@@ -25,12 +25,6 @@ const loginSchema = z.object({ phone: z.string().trim().regex(/^\d{11}$/), passw
 const passwordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(USER_PASSWORD_MIN_LENGTH).max(128) });
 const COOKIE_BASE = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const, path: '/' };
 
-// 注销确认短语的唯一来源。此前在服务端硬编码了一份副本（靠注释约定与字典同步），
-// 而项目约定明确允许「只改 en.ts 里的值」——一旦漂移，服务端会比对新旧串不一致，
-// 英文用户就会永久收到 CONFIRMATION_MISMATCH 而无法注销，且 lint 与测试全绿。
-// 现在三条短语定义在 src/i18n/deleteAccountPhrase.ts，字典与服务端都引用它；
-// 该模块是叶子模块，不会把整份字典带进服务端 bundle。
-
 function genericLoginFailure(res: Response): void {
   res.status(401).json({ error: 'INVALID_CREDENTIALS', message: '账号或密码错误' });
 }
@@ -98,6 +92,8 @@ export function registerAuthRoutes(app: Express): void {
 
   // 用户自助注销。是**硬删除**：连带清空对话记录、登录会话、配额账本与改密凭证，不可恢复。
   // 因此要求用户主动输入确认短语——这是不可逆操作，必须有明确的确认动作，不能只靠点按钮。
+  // 短语本身定义在 src/i18n/deleteAccountPhrase.ts：三份字典与服务端共用同一份常量，
+  // 服务端只引那个叶子模块，避免为了三条短语把整份字典打进 bundle（曾使产物增大 27.9%）。
   app.post('/api/auth/delete-account', requireUser, asyncJsonHandler<AuthRequest>(async (req, res) => {
     const submitted = String(req.body?.confirm || '').trim().toLowerCase();
     const accepted = DELETE_ACCOUNT_PHRASES.some((phrase) => phrase.toLowerCase() === submitted);
