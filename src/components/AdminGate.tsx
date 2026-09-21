@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { UserProfile, Skill, LLMConfig } from '../types';
 import { DEFAULT_LLM_CONFIG } from '../data/initialData';
 import { AdminPanel } from './AdminPanel';
-import { apiFetch } from '../lib/apiFetch';
+import { tryLogout } from '../lib/apiFetch';
 
 type LoginStep = 'credentials' | 'mfa_setup' | 'mfa_verify';
 
@@ -115,18 +115,10 @@ export const AdminGate: React.FC = () => {
     );
   }
 
-  // 退出后台。apiFetch 对非 2xx 不会抛异常，因此必须显式检查 response.ok：
-  // 登出请求失败时会话 Cookie 仍然有效（管理员会话 8 小时且不滚动续期），
-  // 若无条件跳转，管理员会以为已经退出，把仍然可用的后台留在浏览器上。
+  // 退出后台。没真的登出就不能跳转：管理员会话 Cookie 有 8 小时有效期，
+  // 直接跳转会让管理员以为已经退出，把仍然可用的后台留在浏览器上。
   const handleAdminClose = async () => {
-    let loggedOut = false;
-    try {
-      const response = await apiFetch('/api/admin/logout', { method: 'POST' });
-      loggedOut = response.ok;
-    } catch {
-      loggedOut = false;
-    }
-    if (!loggedOut) {
+    if (!(await tryLogout('/api/admin/logout'))) {
       alert('退出登录失败，当前会话可能仍然有效。请重试；若反复失败，请清除本站点的 Cookie。');
       return;
     }

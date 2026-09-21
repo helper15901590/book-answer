@@ -1,4 +1,5 @@
 import type { Dictionary } from './zh-CN';
+import { DELETE_ACCOUNT_PHRASE_EN } from '../deleteAccountPhrase';
 
 // 英文文案会频繁迭代：只需改这里的「值」，键名与结构永远不要动。
 // 少写任何一个键都会让 `npm run lint` 报 missing property。
@@ -130,10 +131,11 @@ export const en: Dictionary = {
     login: 'Sign in',
     logout: 'Sign out',
     logoutFailed: 'Sign-out failed — you may still be signed in',
+    langSwitchTitle: '{short} (current language: {current})',
     deleteAccount: 'Delete account',
     deleteAccountTitle: 'Delete your account?',
     deleteAccountBody: 'This cannot be undone — your account, all conversations, membership benefits and remaining quota will be permanently deleted. Type “{phrase}” to continue.',
-    deleteAccountPhrase: 'delete my account',
+    deleteAccountPhrase: DELETE_ACCOUNT_PHRASE_EN,
     deleteAccountConfirm: 'Delete permanently',
     membershipEntry: 'Membership',
     quotaMonthly: 'Monthly quota',

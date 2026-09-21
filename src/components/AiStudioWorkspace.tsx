@@ -13,7 +13,7 @@ import {
   tierDailyLimit,
   ALL_CATEGORIES,
 } from '../types';
-import { apiFetch } from '../lib/apiFetch';
+import { apiFetch, tryLogout } from '../lib/apiFetch';
 import { copyText } from '../lib/clipboard';
 import { useI18n, membershipTierKey, formatBookTitleByLocale, serverMessage } from '../i18n';
 import { BookDetailModal } from './BookDetailModal';
@@ -531,14 +531,11 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     deleteConfirmText.trim().toLowerCase() === t('workspace.deleteAccountPhrase').toLowerCase();
 
   const handleLogout = async () => {
-    try {
-      const res = await apiFetch('/api/auth/logout', { method: 'POST' });
-      // apiFetch 对非 2xx 不抛异常，必须显式检查：登出失败时会话仍然有效，
-      // 而 App 在 focus / visibilitychange 时会重拉 /api/auth/me，用户切一下标签页就会被自动登回来。
-      if (!res.ok) showToast(t('workspace.logoutFailed'), 'warning');
-    } catch (e) {
-      console.warn('Logout API error:', e);
+    // 没真的登出就不能清本地状态：服务端会话仍然有效，清了会出现
+    // 「界面显示已登出、切个标签页又被 /api/auth/me 自动登回来」的错乱。
+    if (!(await tryLogout('/api/auth/logout'))) {
       showToast(t('workspace.logoutFailed'), 'warning');
+      return;
     }
     setUser(null);
     setSessions([]);

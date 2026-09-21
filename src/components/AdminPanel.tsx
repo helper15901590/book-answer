@@ -598,8 +598,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const latest = data?.skill?.searchCount;
       if (typeof latest !== 'number') throw new Error('unexpected payload');
       setEditingSkill((prev) => (prev ? { ...prev, searchCount: latest } : null));
-      // 刻意不标记为「已编辑」：同步到的就是库中当前值，保存时不回传反而更好——
-      // 服务端会保留最新数字，强行回传只会丢掉同步之后又累积的浏览自增。
+      // 同步到的是库中当前值，与「管理员没动过输入框」等价：清掉标记，
+      // 否则先改过热度再点同步时，保存会把刚同步到的值回传，
+      // 覆盖掉同步到保存之间前台累积的浏览自增。
+      setSkillHeatEdited(false);
       showToast('已同步最新热度');
     } catch {
       showToast('同步热度失败，请重试');
@@ -682,7 +684,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ skill: skillToSave }),
-      });
+      }).then(ensureAdminAuthorized);
       const data = await res.json();
       if (data.success) {
         showToast(editingSkill?.skillType === 'mentor' ? '导师数据更新成功！' : '书籍数据更新成功！');
@@ -694,6 +696,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           );
         }
         fetchAdminData();
+      } else {
+        // 4xx 的响应体也会正常解析成 JSON，不处理就会出现「点了保存、弹窗不动也没提示」
+        showToast(data.message || data.error || '保存失败，请重试');
       }
     } catch (e) {
       alert('保存失败，请检查网络');

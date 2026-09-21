@@ -3,6 +3,8 @@
 //
 // ⚠️ 绝不要给下面的对象加 `as const`：那会把每个值收窄成字面量类型，
 //    导致英文必须逐字等于中文才能通过类型检查。不加时字符串属性自动放宽为 string。
+import { DELETE_ACCOUNT_PHRASE_ZH_CN } from '../deleteAccountPhrase';
+
 export const zhCN = {
   brand: { name: '问书' },
   common: {
@@ -131,10 +133,11 @@ export const zhCN = {
     login: '登录',
     logout: '退出登录',
     logoutFailed: '退出登录失败，登录状态可能仍然有效',
+    langSwitchTitle: '{short}（当前语言：{current}）',
     deleteAccount: '注销账号',
     deleteAccountTitle: '确认注销账号？',
     deleteAccountBody: '此操作不可恢复：你的账号、全部对话记录、会员权益与剩余额度都会被永久删除。请输入「{phrase}」以继续。',
-    deleteAccountPhrase: '我确认注销',
+    deleteAccountPhrase: DELETE_ACCOUNT_PHRASE_ZH_CN,
     deleteAccountConfirm: '永久注销',
     membershipEntry: '会员订阅',
     quotaMonthly: '本月调用额度',

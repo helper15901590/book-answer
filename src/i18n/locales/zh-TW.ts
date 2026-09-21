@@ -1,4 +1,5 @@
 import type { Dictionary } from './zh-CN';
+import { DELETE_ACCOUNT_PHRASE_ZH_TW } from '../deleteAccountPhrase';
 
 // 繁體中文（台灣慣用語）。同樣只改值、不動鍵名。
 export const zhTW: Dictionary = {
@@ -129,10 +130,11 @@ export const zhTW: Dictionary = {
     login: '登入',
     logout: '登出',
     logoutFailed: '登出失敗，登入狀態可能仍然有效',
+    langSwitchTitle: '{short}（目前語言：{current}）',
     deleteAccount: '註銷帳號',
     deleteAccountTitle: '確認註銷帳號？',
     deleteAccountBody: '此操作無法復原：你的帳號、全部對話記錄、會員權益與剩餘額度都會被永久刪除。請輸入「{phrase}」以繼續。',
-    deleteAccountPhrase: '我確認註銷',
+    deleteAccountPhrase: DELETE_ACCOUNT_PHRASE_ZH_TW,
     deleteAccountConfirm: '永久註銷',
     membershipEntry: '會員訂閱',
     quotaMonthly: '本月呼叫額度',

@@ -23,6 +23,18 @@ const { db } = await import('../server/db.js');
 const current = db.getLLMConfig();
 const before = current.agreements;
 
+// 解密失败时 getLLMConfig() 会静默回退到 DEFAULT_LLM_CONFIG，而它的正文恰好就是下面要比对的
+// DEFAULT_*，于是 alreadyLatest 恒为 true，脚本会假报「已是最新」并 exit 0——可库里的正文
+// 其实从未被读取过。sanitizeLLMConfigForStorage 会删掉 apiKeyConfigured，成功读取时它必定是
+// 布尔值，因此可以用它把「读到了」与「回退了」区分开。
+// 闸门放在 saveLLMConfig 之前，也顺带避开了「current 是默认配置、导致 API Key 被清空」的风险。
+if (current.apiKeyConfigured === undefined) {
+  console.error('❌ 无法从数据库读取 LLM 配置（多半是 APP_ENCRYPTION_KEY 与建库时不一致）。');
+  console.error('   上方若出现「LLM 配置读取失败」即为密钥不匹配。本脚本不会改动任何数据。');
+  db.close();
+  process.exit(1);
+}
+
 if (!before) {
   console.error('❌ 库中没有协议配置。请先启动一次服务完成初始化，再运行本脚本。');
   db.close();

@@ -21,6 +21,15 @@ function cookieValue(response: request.Response, name: string): string {
   return item ? item.split(';')[0].slice(name.length + 1) : '';
 }
 
+// 取某个 Cookie 的 Max-Age；会话级 Cookie（不带 Max-Age）返回 0。
+function cookieMaxAge(response: request.Response, name: string): number {
+  const header = response.headers['set-cookie'];
+  const values = Array.isArray(header) ? header : header ? [header] : [];
+  const item = values.find((value: string) => value.startsWith(`${name}=`));
+  const match = item?.match(/Max-Age=(\d+)/);
+  return match ? Number(match[1]) : 0;
+}
+
 beforeAll(async () => {
   fs.rmSync('./.test-runtime', { recursive: true, force: true });
   ({ db } = await import('../server/db.js'));
@@ -121,5 +130,38 @@ describe('commercial MVP API', () => {
     } finally {
       await new Promise<void>((resolve) => mock.close(() => resolve()));
     }
+  });
+
+  it('aligns CSRF cookie lifetime with the session and supports self-service account deletion', async () => {
+    const created = await adminAgent.post('/api/admin/users/create').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', adminCsrf).send({ phone: '13900000002', membershipTier: 'free_member' }).expect(200);
+
+    const agent = request.agent(app);
+    await agent.post('/api/auth/login').set('Origin', 'http://127.0.0.1:3000').send({ phone: '13900000002', password: created.body.temporaryPassword }).expect(200);
+    const changed = await agent.post('/api/auth/change-password').set('Origin', 'http://127.0.0.1:3000').send({ currentPassword: created.body.temporaryPassword, newPassword: userPassword }).expect(200);
+
+    // CSRF Cookie 必须与会话 Cookie 同寿命。此前它是会话级、而会话 Cookie 是持久级：
+    // 浏览器完整退出后 CSRF Cookie 消失、会话仍在，而登出请求同样受 CSRF 保护，
+    // 于是必定 403，用户从界面上再也退不出来。
+    const sessionMaxAge = cookieMaxAge(changed, 'book_answer_user_session');
+    const csrfMaxAge = cookieMaxAge(changed, 'book_answer_user_csrf');
+    expect(csrfMaxAge).toBe(sessionMaxAge);
+    expect(csrfMaxAge).toBeGreaterThan(0);
+
+    const csrf = cookieValue(changed, 'book_answer_user_csrf');
+
+    // 未登录不能注销
+    await request(app).post('/api/auth/delete-account').set('Origin', 'http://127.0.0.1:3000').send({ confirm: '我确认注销' }).expect(401);
+
+    // 短语不匹配必须拒绝，且账号不能被误删
+    const wrong = await agent.post('/api/auth/delete-account').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', csrf).send({ confirm: '我确认' }).expect(400);
+    expect(wrong.body.error).toBe('CONFIRMATION_MISMATCH');
+    expect(db.getUserById(created.body.user.id)).toBeTruthy();
+
+    // 三种语言的短语都接受，且忽略大小写（服务端与前端共用同一份定义）
+    await agent.post('/api/auth/delete-account').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', csrf).send({ confirm: 'Delete My Account' }).expect(200);
+
+    // 删号后账号不存在、原会话失效
+    expect(db.getUserById(created.body.user.id)).toBeFalsy();
+    await agent.get('/api/auth/me').expect(401);
   });
 });
