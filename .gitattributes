@@ -1,0 +1,2 @@
+# Shell 脚本必须保持 LF（在 Linux VPS/容器内执行；core.autocrlf=true 的 Windows 检出不得转为 CRLF）
+*.sh text eol=lf

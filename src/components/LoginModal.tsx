@@ -1,305 +1,136 @@
 import React, { useState } from 'react';
-import { UserProfile, LLMConfig } from '../types';
-import { X, Phone, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { UserProfile, LLMConfig, AuthPolicy } from '../types';
+import { X, Phone, ShieldCheck, AlertTriangle, LockKeyhole, Eye, EyeOff } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY } from '../data/initialData';
+import { evaluatePasswordStrength } from '../lib/passwordStrength';
+import { useI18n, serverMessage } from '../i18n';
 
 interface LoginModalProps {
   onSuccess: (user: UserProfile) => void;
   onClose: () => void;
-  isTriggeredBy401?: boolean;
+  reason?: 'required' | 'quota';
   llmConfig?: LLMConfig;
-  initialMode?: 'login' | 'register';
+  authPolicy?: AuthPolicy;
 }
 
-export const LoginModal: React.FC<LoginModalProps> = ({
-  onSuccess,
-  onClose,
-  isTriggeredBy401,
-  llmConfig,
-}) => {
+export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose, reason, llmConfig, authPolicy }) => {
   const [phone, setPhone] = useState('');
-  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [step, setStep] = useState<'login' | 'change_password'>('login');
   const [agreed, setAgreed] = useState(false);
-  const [countdown, setCountdown] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [viewingAgreement, setViewingAgreement] = useState<'terms' | 'privacy' | null>(null);
-
-  const userAgreementTitle = llmConfig?.agreements?.userAgreementTitle || '用户服务协议';
+  const { t } = useI18n();
+  const minLength = authPolicy?.userMinLength || 6;
+  const strength = evaluatePasswordStrength(newPassword, minLength);
+  const userAgreementTitle = llmConfig?.agreements?.userAgreementTitle || t('login.defaultUserAgreementTitle');
   const userAgreementContent = llmConfig?.agreements?.userAgreementContent || DEFAULT_USER_AGREEMENT;
-  const privacyPolicyTitle = llmConfig?.agreements?.privacyPolicyTitle || '隐私政策';
+  const privacyPolicyTitle = llmConfig?.agreements?.privacyPolicyTitle || t('login.defaultPrivacyPolicyTitle');
   const privacyPolicyContent = llmConfig?.agreements?.privacyPolicyContent || DEFAULT_PRIVACY_POLICY;
-  const guestQuota = llmConfig?.dailyLimits?.guestUser ?? 3;
 
-  // Handle Send Code Countdown
-  const handleSendCode = () => {
-    if (!phone.trim()) {
-      setErrorMsg('请输入手机号码');
-      return;
-    }
-    if (!/^\d{11}$/.test(phone)) {
-      setErrorMsg('手机号码必须为11位阿拉伯数字');
-      return;
-    }
-    setErrorMsg('');
-    setCountdown(60);
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+  const submitLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!/^\d{11}$/.test(phone.trim())) return setErrorMsg(t('login.errPhone'));
+    if (!password) return setErrorMsg(t('login.errPasswordRequired'));
+    if (!agreed) return setErrorMsg(t('login.errAgreement'));
+    setIsSubmitting(true); setErrorMsg('');
+    try {
+      const response = await fetch('/api/auth/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.trim(), password }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) return setErrorMsg(serverMessage(data, t, 'login.errLoginFailed'));
+      if (data.passwordChangeRequired) { setStep('change_password'); return; }
+      if (data.user) onSuccess(data.user);
+    } catch { setErrorMsg(t('login.errNetwork')); }
+    finally { setIsSubmitting(false); }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!phone.trim()) {
-      setErrorMsg('请输入手机号码');
-      return;
-    }
-    if (!/^\d{11}$/.test(phone)) {
-      setErrorMsg('手机号码必须为11位阿拉伯数字');
-      return;
-    }
-
-    if (!code.trim()) {
-      setErrorMsg('请输入短信验证码');
-      return;
-    }
-    if (!/^\d{6}$/.test(code)) {
-      setErrorMsg('验证码必须为6位阿拉伯数字');
-      return;
-    }
-
-    if (!agreed) {
-      setErrorMsg('请先勾选同意用户协议与隐私政策');
-      return;
-    }
-    setIsSubmitting(true);
-    setErrorMsg('');
-
+  const submitPasswordChange = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (newPassword.length < minLength) return setErrorMsg(t('login.errPasswordTooShort', { min: minLength }));
+    if (newPassword !== confirmPassword) return setErrorMsg(t('login.errPasswordMismatch'));
+    setIsSubmitting(true); setErrorMsg('');
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: phone.trim(),
-          code: code.trim(),
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setErrorMsg(data.error || '登录失败，请检查账号或验证码');
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (data.token) {
-        localStorage.setItem('auth_token', data.token);
-      }
-      if (data.user) {
-        onSuccess(data.user);
-      }
-    } catch (e: any) {
-      console.error('Auth request error:', e);
-      setErrorMsg('网络请求异常，请稍后重试');
-    } finally {
-      setIsSubmitting(false);
-    }
+      const response = await fetch('/api/auth/change-password', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: password, newPassword }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) return setErrorMsg(serverMessage(data, t, 'login.errChangePasswordFailed'));
+      if (data.user) onSuccess(data.user);
+    } catch { setErrorMsg(t('login.errNetwork')); }
+    finally { setIsSubmitting(false); }
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white w-full max-w-sm rounded-2xl shadow-xl border border-gray-200 overflow-hidden flex flex-col antialiased text-left transition-all">
-        {/* Header */}
+      <div className="relative bg-white w-full max-w-sm rounded-2xl shadow-xl border border-gray-200 overflow-hidden flex flex-col antialiased text-left transition-all">
         <div className="px-5 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-          <span className="font-bold text-sm text-gray-900 tracking-tight">账号登录</span>
-          <button
-            onClick={onClose}
-            className="p-1 text-gray-400 hover:text-gray-900 rounded-lg transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <span className="font-bold text-sm text-gray-900 tracking-tight">{t(step === 'login' ? 'login.titleLogin' : 'login.titleChangePassword')}</span>
+          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-900 rounded-lg transition-colors cursor-pointer" aria-label={t('common.close')}><X className="w-4 h-4" /></button>
         </div>
-
-        {/* Notice Prompt when triggered by quota exhaustion */}
-        {isTriggeredBy401 && (
+        {(reason || step === 'change_password') && (
           <div className="px-5 pt-3.5 -mb-1">
-            <p className="text-xs text-gray-500 leading-relaxed font-normal flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 inline-block" />
-              <span>{`您当前还未登录，享有的体验额度${guestQuota}次已用完，请登录后继续体验。`}</span>
+            <p className="text-xs text-gray-500 leading-relaxed flex items-center gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span>{step === 'change_password' ? t('login.noticeChangePassword', { min: minLength }) : reason === 'quota' ? t('login.noticeQuota') : t('login.noticeLoginRequired')}</span>
             </p>
           </div>
         )}
-
-        {/* Body */}
         <div className="p-5 space-y-3.5">
-          <form onSubmit={handleSubmit} className="space-y-3">
-            {/* Phone Input */}
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-gray-500">手机号码</label>
-              <div className="relative flex items-center">
-                <Phone className="w-4 h-4 text-gray-400 absolute left-3 pointer-events-none" />
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={11}
-                  value={phone}
-                  onChange={(e) => {
-                    const filtered = e.target.value.replace(/\D/g, '').slice(0, 11);
-                    setPhone(filtered);
-                    if (errorMsg) setErrorMsg('');
-                  }}
-                  placeholder="请输入11位手机号"
-                  className="w-full pl-9 pr-3 py-2 bg-transparent border border-gray-200 rounded-xl text-xs text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-gray-900 focus:bg-transparent transition-all"
-                />
+          {step === 'login' ? (
+            <form onSubmit={submitLogin} className="space-y-3">
+              <label className="block text-[11px] font-medium text-gray-500">{t('login.phoneLabel')}</label>
+              <div className="relative"><Phone className="w-3.5 h-3.5 absolute left-3 top-2.5 text-gray-400" /><input value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="numeric" autoComplete="username" className="w-full pl-9 pr-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-gray-900" placeholder={t('login.phonePlaceholder')} /></div>
+              <label className="block text-[11px] font-medium text-gray-500">{t('login.passwordLabel')}</label>
+              <div className="relative"><LockKeyhole className="w-3.5 h-3.5 absolute left-3 top-2.5 text-gray-400" /><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" className="w-full pl-9 pr-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-gray-900" placeholder={t('login.passwordPlaceholder')} /></div>
+              <label className="flex items-start gap-2 text-[11px] text-gray-500 leading-relaxed"><input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} className="mt-0.5" /><span>{t('login.agreementPrefix')} <button type="button" className="text-amber-800 underline" onClick={() => setViewingAgreement('terms')}>{userAgreementTitle}</button> {t('login.agreementAnd')} <button type="button" className="text-amber-800 underline" onClick={() => setViewingAgreement('privacy')}>{privacyPolicyTitle}</button></span></label>
+              {errorMsg && <p className="text-xs text-rose-600">{errorMsg}</p>}
+              <button disabled={isSubmitting} className="w-full py-2.5 rounded-lg bg-gray-900 text-white text-xs font-semibold disabled:opacity-50">{isSubmitting ? t('login.submitLoggingIn') : t('login.submitLogin')}</button>
+            </form>
+          ) : (
+            <form onSubmit={submitPasswordChange} className="space-y-3">
+              <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 rounded-lg p-3"><ShieldCheck className="w-4 h-4" />{t('login.changeSuccess')}</div>
+              <div className="flex items-center justify-between">
+                <label className="block text-[11px] font-medium text-gray-500">{t('login.newPasswordLabel', { min: minLength })}</label>
+                {/* 首登改密要连输两遍，看不清时很容易输错；这个按钮同时切换两个框的可见性 */}
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-pressed={showPassword}
+                  className="inline-flex items-center gap-1 text-[11px] text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
+                >
+                  {showPassword ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                  {showPassword ? t('login.hidePassword') : t('login.showPassword')}
+                </button>
               </div>
-            </div>
-
-            {/* Code Input */}
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-gray-500">短信验证码</label>
-              <div className="flex gap-2">
-                <div className="relative flex-1 flex items-center">
-                  <ShieldCheck className="w-4 h-4 text-gray-400 absolute left-3 pointer-events-none" />
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={code}
-                    onChange={(e) => {
-                      const filtered = e.target.value.replace(/\D/g, '').slice(0, 6);
-                      setCode(filtered);
-                      if (errorMsg) setErrorMsg('');
-                    }}
-                    placeholder="6位阿拉伯数字验证码"
-                    className="w-full pl-9 pr-3 py-2 bg-transparent border border-gray-200 rounded-xl text-xs text-gray-900 placeholder:text-gray-400 focus:outline-none focus:border-gray-900 focus:bg-transparent transition-all"
-                  />
+              <input type={showPassword ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-gray-900" />
+              {strength && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div className={`h-full ${strength.barClass} transition-all`} style={{ width: `${strength.widthPercent}%` }} />
+                    </div>
+                    <span className={`text-[10px] font-bold shrink-0 ${strength.textClass}`}>{t('password.strengthLabel', { level: t(strength.labelKey) })}</span>
+                  </div>
+                  <p className={`text-[10px] leading-relaxed ${strength.textClass}`}>{t(strength.hintKey, strength.hintVars)}</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleSendCode}
-                  disabled={countdown > 0}
-                  className="px-3 py-2 bg-transparent hover:bg-gray-50 disabled:bg-transparent text-gray-700 disabled:text-gray-400 rounded-xl text-xs font-medium border border-gray-200 transition-all shrink-0 cursor-pointer disabled:cursor-not-allowed"
-                >
-                  {countdown > 0 ? `${countdown}s` : '获取验证码'}
-                </button>
-              </div>
-            </div>
-
-            {errorMsg && (
-              <div className="p-2 bg-rose-50 border border-rose-200 rounded-xl text-[11px] text-rose-600 flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                <span>{errorMsg}</span>
-              </div>
-            )}
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full mt-2 py-2.5 bg-[#f4efe6] hover:bg-[#eae2d5] text-[#2c221e] text-xs font-bold rounded-xl border border-[#e2dacd] transition-all flex items-center justify-center shadow-2xs cursor-pointer disabled:opacity-50"
-            >
-              <span>{isSubmitting ? '登录中...' : '确认登录'}</span>
-            </button>
-          </form>
-
-          {/* Agreement Footer */}
-          <div className="pt-3 border-t border-gray-100 flex items-start gap-1.5 text-[10px] text-gray-500">
-            <input
-              type="checkbox"
-              id="agreement"
-              checked={agreed}
-              onChange={(e) => {
-                setAgreed(e.target.checked);
-                if (errorMsg) setErrorMsg('');
-              }}
-              className="mt-0.5 rounded border-gray-300 accent-[#cbb88b] text-[#cbb88b] focus:ring-0 cursor-pointer"
-            />
-            <label htmlFor="agreement" className="cursor-pointer leading-tight select-none">
-              已阅读并同意
-              <button
-                type="button"
-                onClick={() => setViewingAgreement('terms')}
-                className="text-[#8c6227] hover:underline mx-0.5 cursor-pointer font-medium"
-              >
-                《{userAgreementTitle}》
-              </button>
-              和
-              <button
-                type="button"
-                onClick={() => setViewingAgreement('privacy')}
-                className="text-[#8c6227] hover:underline mx-0.5 cursor-pointer font-medium"
-              >
-                《{privacyPolicyTitle}》
-              </button>
-            </label>
-          </div>
+              )}
+              <label className="block text-[11px] font-medium text-gray-500">{t('login.confirmPasswordLabel')}</label>
+              <input type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-gray-900" />
+              {errorMsg && <p className="text-xs text-rose-600">{errorMsg}</p>}
+              <button disabled={isSubmitting} className="w-full py-2.5 rounded-lg bg-gray-900 text-white text-xs font-semibold disabled:opacity-50">{isSubmitting ? t('login.submitSaving') : t('login.submitChange')}</button>
+            </form>
+          )}
         </div>
+        {viewingAgreement && (
+          <div className="absolute inset-0 bg-white z-10 p-5 overflow-y-auto">
+            <div className="flex items-center justify-between mb-4"><b className="text-sm">{viewingAgreement === 'terms' ? userAgreementTitle : privacyPolicyTitle}</b><button onClick={() => setViewingAgreement(null)} className="text-xs text-gray-500">{t('login.back')}</button></div>
+            <div className="prose prose-sm max-w-none text-xs text-gray-600"><ReactMarkdown>{viewingAgreement === 'terms' ? userAgreementContent : privacyPolicyContent}</ReactMarkdown></div>
+          </div>
+        )}
       </div>
-
-      {/* Agreement View Modal */}
-      {viewingAgreement && (
-        <div className="fixed inset-0 z-60 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-lg max-h-[80vh] rounded-2xl shadow-2xl border border-gray-200 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="px-5 py-3.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-1.5 bg-gray-200/70 p-1 rounded-xl">
-                <button
-                  type="button"
-                  onClick={() => setViewingAgreement('terms')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    viewingAgreement === 'terms'
-                      ? 'bg-white text-gray-900 shadow-2xs'
-                      : 'text-gray-500 hover:text-gray-800'
-                  }`}
-                >
-                  {userAgreementTitle}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewingAgreement('privacy')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    viewingAgreement === 'privacy'
-                      ? 'bg-white text-gray-900 shadow-2xs'
-                      : 'text-gray-500 hover:text-gray-800'
-                  }`}
-                >
-                  {privacyPolicyTitle}
-                </button>
-              </div>
-              <button
-                onClick={() => setViewingAgreement(null)}
-                className="p-1 text-gray-400 hover:text-gray-900 rounded-lg transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="p-6 overflow-y-auto text-xs text-gray-700 leading-relaxed font-sans prose prose-xs max-w-none">
-              <div className="markdown-body">
-                <ReactMarkdown>
-                  {viewingAgreement === 'terms' ? userAgreementContent : privacyPolicyContent}
-                </ReactMarkdown>
-              </div>
-            </div>
-            <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 flex justify-end shrink-0">
-              <button
-                onClick={() => {
-                  setAgreed(true);
-                  setViewingAgreement(null);
-                }}
-                className="px-4 py-2 bg-[#f4efe6] hover:bg-[#eae2d5] text-[#2c221e] text-xs font-bold rounded-xl border border-[#e2dacd] transition-all cursor-pointer shadow-2xs"
-              >
-                同意并返回
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

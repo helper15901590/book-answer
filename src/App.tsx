@@ -1,133 +1,70 @@
 import React, { useState } from 'react';
-import { UserProfile, Skill, LLMConfig, getEffectiveMembershipTier } from './types';
-import { INITIAL_SKILLS, GUEST_USER, DEFAULT_LLM_CONFIG } from './data/initialData';
+import { UserProfile, Skill, LLMConfig, AuthPolicy } from './types';
+import { DEFAULT_LLM_CONFIG } from './data/initialData';
 import { AiStudioWorkspace } from './components/AiStudioWorkspace';
 import { LoginModal } from './components/LoginModal';
-import { AdminPanel } from './components/AdminPanel';
+
+const DEFAULT_AUTH_POLICY: AuthPolicy = { userMinLength: 6, adminMinLength: 16, registrationEnabled: false };
 
 export default function App() {
-  const [user, setUser] = useState<UserProfile>(GUEST_USER);
-  const [skills, setSkills] = useState<Skill[]>(INITIAL_SKILLS);
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [llmConfig, setLlmConfig] = useState<LLMConfig>(DEFAULT_LLM_CONFIG);
+  const [authPolicy, setAuthPolicy] = useState<AuthPolicy>(DEFAULT_AUTH_POLICY);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
 
-  // Sync with backend database on mount & revalidation
-  const refreshUserProfile = React.useCallback(() => {
-    const token = localStorage.getItem('auth_token');
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+  const refreshUserProfile = React.useCallback(async (): Promise<UserProfile | null> => {
+    try {
+      const response = await fetch('/api/auth/me', { credentials: 'include' });
+      if (!response.ok) {
+        setUser(null);
+        return null;
+      }
+      const data = await response.json();
+      const nextUser = data.user || null;
+      setUser(nextUser);
+      return nextUser;
+    } catch (error) {
+      console.warn('同步用户状态失败:', error);
+      return null;
     }
+  }, []);
 
-    return fetch('/api/auth/me', { headers })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.user) {
-          setUser(data.user);
-        }
-        return data.user;
-      })
-      .catch((e) => console.warn('Sync user error:', e));
+  // 公开配置（含各等级额度上限）必须与用户状态一起刷新：
+  // 后台改了额度后，用户端若只刷新用户对象，就会出现「等级已更新、额度仍是旧值」的错位。
+  const refreshPublicConfig = React.useCallback(async (): Promise<void> => {
+    try {
+      const response = await fetch('/api/config/public');
+      const data = await response.json();
+      if (data.llmConfig) setLlmConfig(data.llmConfig);
+      if (data.authPolicy) setAuthPolicy(data.authPolicy);
+    } catch (error) {
+      console.warn('同步配置失败:', error);
+    }
   }, []);
 
   React.useEffect(() => {
-    refreshUserProfile();
+    void refreshUserProfile();
+    void refreshPublicConfig();
+    fetch('/api/skills').then((response) => response.json()).then((data) => {
+      if (Array.isArray(data.skills) && data.skills.length) setSkills(data.skills);
+    }).catch((error) => console.warn('同步技能失败:', error));
 
-    // Listen to tab focus & visibility changes to keep user data in perfect sync with backend
-    const handleFocus = () => {
-      refreshUserProfile();
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        refreshUserProfile();
-      }
-    };
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    fetch('/api/skills')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.skills && data.skills.length > 0) setSkills(data.skills);
-      })
-      .catch((e) => console.warn('Sync skills error:', e));
-
-    fetch('/api/admin/llm-config')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.llmConfig) {
-          setLlmConfig(data.llmConfig);
-          setUser((prev) => {
-            const effTier = getEffectiveMembershipTier(prev);
-            let limit = data.llmConfig.dailyLimits?.freeMember ?? 10;
-            if (prev.role === 'guest') {
-              limit = data.llmConfig.dailyLimits?.guestUser ?? 3;
-            } else if (effTier === 'monthly_member') {
-              limit = data.llmConfig.dailyLimits?.monthlyMember ?? 100;
-            } else if (effTier === 'quarterly_member') {
-              limit = data.llmConfig.dailyLimits?.quarterlyMember ?? 200;
-            } else if (effTier === 'yearly_member') {
-              limit = data.llmConfig.dailyLimits?.yearlyMember ?? 500;
-            }
-            return { ...prev, dailyMaxChats: limit };
-          });
-        }
-      })
-      .catch((e) => console.warn('Sync LLM config error:', e));
-
+    const sync = () => { void refreshUserProfile(); void refreshPublicConfig(); };
+    window.addEventListener('focus', sync);
+    const handleVisibility = () => { if (document.visibilityState === 'visible') { void refreshUserProfile(); void refreshPublicConfig(); } };
+    document.addEventListener('visibilitychange', handleVisibility);
     return () => {
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', sync);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [refreshUserProfile]);
+  }, [refreshUserProfile, refreshPublicConfig]);
 
-  // Modals & Navigation state
   const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const [isLoginTriggeredBy401, setIsLoginTriggeredBy401] = useState(false);
-  const [isAdminOpen, setIsAdminOpen] = useState(() => {
-    return (
-      typeof window !== 'undefined' &&
-      (window.location.pathname.startsWith('/admin') ||
-        window.location.hash.toLowerCase().includes('admin'))
-    );
-  });
-
-  // Listen to URL hash/popstate changes for independent admin link access
-  React.useEffect(() => {
-    const handleUrlChange = () => {
-      if (
-        window.location.pathname.startsWith('/admin') ||
-        window.location.hash.toLowerCase().includes('admin')
-      ) {
-        setIsAdminOpen(true);
-      }
-    };
-    window.addEventListener('popstate', handleUrlChange);
-    window.addEventListener('hashchange', handleUrlChange);
-    return () => {
-      window.removeEventListener('popstate', handleUrlChange);
-      window.removeEventListener('hashchange', handleUrlChange);
-    };
-  }, []);
-
-  const openAdmin = () => {
-    if (window.location.hash !== '#admin') {
-      window.history.pushState(null, '', '#admin');
-    }
-    setIsAdminOpen(true);
-  };
-
-  const closeAdmin = () => {
-    if (window.location.hash === '#admin') {
-      window.history.pushState(null, '', window.location.pathname);
-    }
-    setIsAdminOpen(false);
-    refreshUserProfile();
-  };
+  const [loginReason, setLoginReason] = useState<'required' | 'quota'>('required');
 
   return (
     <div className="min-h-screen bg-white text-gray-900 font-sans antialiased relative overflow-hidden selection:bg-gray-900 selection:text-white">
-      {/* Google AI Studio Workspace Layout */}
       <AiStudioWorkspace
         skills={skills}
         setSkills={setSkills}
@@ -137,43 +74,16 @@ export default function App() {
         selectedSkill={selectedSkill}
         setSelectedSkill={setSelectedSkill}
         onRefreshUser={refreshUserProfile}
-        onOpenLogin={() => {
-          setIsLoginTriggeredBy401(false);
-          setIsLoginOpen(true);
-        }}
-        onOpenAdmin={openAdmin}
-        onTriggerLogin401={() => {
-          setIsLoginTriggeredBy401(true);
-          setIsLoginOpen(true);
-        }}
+        onOpenLogin={() => { setLoginReason('required'); setIsLoginOpen(true); }}
+        onTriggerLogin401={() => { setLoginReason('quota'); setIsLoginOpen(true); }}
       />
-
-      {/* Modals */}
       {isLoginOpen && (
         <LoginModal
           llmConfig={llmConfig}
-          isTriggeredBy401={isLoginTriggeredBy401}
-          onSuccess={(updatedFields) => {
-            setUser((prev) => ({ ...prev, ...updatedFields }));
-            setIsLoginOpen(false);
-            setIsLoginTriggeredBy401(false);
-          }}
-          onClose={() => {
-            setIsLoginOpen(false);
-            setIsLoginTriggeredBy401(false);
-          }}
-        />
-      )}
-
-      {isAdminOpen && (
-        <AdminPanel
-          llmConfig={llmConfig}
-          setLlmConfig={setLlmConfig}
-          skills={skills}
-          setSkills={setSkills}
-          user={user}
-          setUser={setUser}
-          onClose={closeAdmin}
+          authPolicy={authPolicy}
+          reason={loginReason}
+          onSuccess={(nextUser) => { setUser(nextUser); setIsLoginOpen(false); }}
+          onClose={() => setIsLoginOpen(false)}
         />
       )}
     </div>
