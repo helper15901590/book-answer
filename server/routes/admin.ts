@@ -5,7 +5,7 @@ import path from 'path';
 import { Express, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
-import { db, getTodayString } from '../db.js';
+import { db, getTodayString, MAX_TAGS } from '../db.js';
 import { ADMIN_PASSWORD, ADMIN_PHONE, ADMIN_CHALLENGE_COOKIE, ADMIN_MFA_ENABLED, ADMIN_SECOND_PASSWORD, CHALLENGE_TTL_MS, COOKIE_SECURE, DATA_DIR } from '../config.js';
 import { metrics, onlineUsers } from '../services/metrics.js';
 import {
@@ -321,25 +321,29 @@ export function registerAdminRoutes(app: Express): void {
 
   app.post('/api/admin/tags', requireAdmin, (req, res) => {
     const { tags, renamedMap, deletedTags } = req.body || {};
-    if (!Array.isArray(tags)) return res.status(400).json({ error: 'tags must be an array' });
-    const savedTags = db.saveTags(tags);
-    const skills = db.getSkills();
-    for (const skill of skills) {
-      let changed = false;
-      if (skill.category) {
-        if (renamedMap?.[skill.category]) { skill.category = renamedMap[skill.category]; changed = true; }
-        if (deletedTags?.includes(skill.category) || !savedTags.includes(skill.category)) { skill.category = savedTags[0] || ''; changed = true; }
-      } else if (savedTags.length) { skill.category = savedTags[0]; changed = true; }
-      if (Array.isArray(skill.tags)) {
-        let updated = skill.tags.map((tag) => renamedMap?.[tag] || tag);
-        if (deletedTags) updated = updated.filter((tag) => !deletedTags.includes(tag));
-        updated = updated.filter((tag) => savedTags.includes(tag));
-        if (!updated.length && savedTags.length) updated = [savedTags[0]];
-        if (JSON.stringify(updated) !== JSON.stringify(skill.tags)) { skill.tags = updated; changed = true; }
-      }
-      if (changed) db.saveSkill(skill);
+    // 错误码不与既有的 INVALID_REQUEST 复用：那个码在用户端三份字典里已经绑定到
+    // 「请检查会话、技能和消息内容」，同一码承载两种语义会让按码翻译与按码排查同时失效。
+    if (!Array.isArray(tags)) return res.status(400).json({ error: 'INVALID_TAGS', message: '标签必须是数组' });
+    // 超限必须显式拒绝，不能交给 replaceTags 去截断：被丢掉的标签下所有书籍会被回落到
+    // 第一个分类，而调用方只会看到一个 success。
+    if (tags.length > MAX_TAGS) return res.status(400).json({ error: 'TOO_MANY_TAGS', message: `分类标签最多 ${MAX_TAGS} 个，当前 ${tags.length} 个` });
+    const { savedTags, affectedSkills } = db.replaceTags({ tags, renamedMap, deletedTags });
+    // 至少得留一个分类：标签是整个平台的分类主键，删空会让所有书籍失去分类。
+    // 被拒的破坏性写入同样要留档——否则「反复试探清空分类」在 audit_logs 里毫无痕迹。
+    if (!savedTags.length) {
+      db.audit({
+        actorType: 'admin', actorId: 'admin', action: 'tags_update_rejected',
+        metadata: { reason: 'EMPTY_TAGS', renamedMap: renamedMap || {}, deletedTags: deletedTags || [] },
+        ip: req.ip, userAgent: req.get('user-agent') || undefined,
+      });
+      return res.status(400).json({ error: 'EMPTY_TAGS', message: '至少需要保留一个分类标签，否则全部书籍会失去分类' });
     }
-    res.json({ success: true, tags: savedTags });
+    db.audit({
+      actorType: 'admin', actorId: 'admin', action: 'tags_updated',
+      metadata: { tagCount: savedTags.length, renamedMap: renamedMap || {}, deletedTags: deletedTags || [], affectedSkills },
+      ip: req.ip, userAgent: req.get('user-agent') || undefined,
+    });
+    res.json({ success: true, tags: savedTags, affectedSkills });
   });
 
   app.get('/api/admin/skills', requireAdmin, (_req, res) => {

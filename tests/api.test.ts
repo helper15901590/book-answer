@@ -1,11 +1,13 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import Database from 'better-sqlite3';
 import { generateSync } from 'otplib';
 import fs from 'node:fs';
 import { createServer } from 'node:http';
 
 let app: any;
 let db: any;
+let MAX_TAGS = 0;
 let createApp: any;
 let adminAgent: any;
 let adminCsrf = '';
@@ -37,7 +39,7 @@ function cookieMaxAge(response: request.Response, name: string): number {
 
 beforeAll(async () => {
   fs.rmSync('./.test-runtime', { recursive: true, force: true });
-  ({ db } = await import('../server/db.js'));
+  ({ db, MAX_TAGS } = await import('../server/db.js'));
   db.clearAllUsers();
   ({ createApp } = await import('../server/app.js'));
   app = await createApp();
@@ -175,5 +177,71 @@ describe('commercial MVP API', () => {
     // 删号后账号不存在、原会话失效
     expect(db.getUserById(created.body.user.id)).toBeFalsy();
     await agent.get('/api/auth/me').expect(401);
+  });
+
+  it('refuses to empty the tag list and cascades tag renames to skills', async () => {
+    const before: string[] = db.getTags();
+    expect(before.length).toBeGreaterThan(0);
+    // 断言必须落在库中真实行上：getSkills() 在 skills 表为空时会回落到种子数据，
+    // 用它做循环会一圈不转地通过，等于什么都没验证。
+    const persisted = () => db.getPersistedSkills();
+    expect(persisted().length).toBeGreaterThan(0);
+
+    const target = before[0];
+    const renamed = `${target}-已改名`;
+    const renamedTags = before.map((tag) => (tag === target ? renamed : tag));
+
+    try {
+      // 超出上限必须显式拒绝：此前是静默截断，被丢掉的标签下所有书籍会被回落到第一个分类，
+      // 而调用方只看到 success。
+      const tooMany = await adminAgent.post('/api/admin/tags')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .set('X-CSRF-Token', adminCsrf)
+        .send({ tags: Array.from({ length: MAX_TAGS + 1 }, (_, i) => `标签${i}`) })
+        .expect(400);
+      expect(tooMany.body.error).toBe('TOO_MANY_TAGS');
+      expect(db.getTags()).toEqual(before);
+
+      // 标签是全平台的分类主键。提交空数组此前会被接受，并把每个技能的 category 写成空串，
+      // 前台随即多出一个没有名字的分类——必须拒绝，且不能留下任何改动。
+      const rejected = await adminAgent.post('/api/admin/tags')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .set('X-CSRF-Token', adminCsrf)
+        .send({ tags: [], deletedTags: before })
+        .expect(400);
+      expect(rejected.body.error).toBe('EMPTY_TAGS');
+      expect(db.getTags()).toEqual(before);
+      for (const skill of persisted()) {
+        expect(skill.category).not.toBe('');
+      }
+      // 被拒的破坏性写入也要留档，否则反复试探清空分类在 audit_logs 里毫无痕迹。
+      // 服务端没有对外暴露读审计表的接口，这里直连同一个库文件确认落盘结果。
+      const auditDb = new Database('./.test-runtime/commercial.sqlite', { readonly: true });
+      const rejectedAudit = auditDb.prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'tags_update_rejected'").get() as { count: number };
+      auditDb.close();
+      expect(rejectedAudit.count).toBeGreaterThan(0);
+
+      // 正常改名：提交的 tags 里已是新名字（前端就是这么构造的），renamedMap 用于级联改写技能
+      const updated = await adminAgent.post('/api/admin/tags')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .set('X-CSRF-Token', adminCsrf)
+        .send({ tags: renamedTags, renamedMap: { [target]: renamed } })
+        .expect(200);
+      expect(updated.body.tags).toContain(renamed);
+      expect(db.getTags()).toEqual(renamedTags);
+      for (const skill of persisted()) {
+        expect(skill.category).not.toBe(target);
+      }
+    } finally {
+      // 中途任何一步断言失败都要还原：改名留在库里会污染同一运行目录下的后续运行。
+      // 还原本身幂等——改名映射找不到目标标签时不会改动任何数据。
+      if (adminCsrf) {
+        await adminAgent.post('/api/admin/tags')
+          .set('Origin', 'http://127.0.0.1:3000')
+          .set('X-CSRF-Token', adminCsrf)
+          .send({ tags: before, renamedMap: { [renamed]: target } });
+      }
+    }
+    expect(db.getTags()).toEqual(before);
   });
 });

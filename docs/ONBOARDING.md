@@ -43,7 +43,7 @@ Express app (server/app.ts)
 | `tests/api.test.ts` | 集成测试 |
 
 ## Data Model
-- `users`：随机 `usr_<UUID>`、强密码哈希、状态、会员与登录安全字段
+- `users`：随机 `usr_` + 8 位随机字符（共 12 位，字符集剔除了 0/O/1/I/l 等易混字符）、强密码哈希、状态、会员与登录安全字段
 - `chat_sessions`：按用户隔离的消息 JSON
 - `auth_sessions`：仅保存会话令牌哈希，支持即时吊销
 - `auth_challenges`：首次改密、管理员 MFA 的短期挑战

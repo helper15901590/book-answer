@@ -57,6 +57,28 @@ function getCurrentMonthString(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
+// 分类标签的数量上限。超出必须由调用方显式拒绝而不是静默截断：被丢掉的标签下所有书籍
+// 会被回落到第一个分类，静默截断等于一次没有任何提示的批量改分类。
+export const MAX_TAGS = 50;
+
+// 标签接口的入参来自 JSON，形状不受类型系统约束，必须显式收窄。
+// renamedMap 用 Map 承载而非普通对象：对象取值会走原型链，标签名若为 constructor、
+// toString 之类，`renamedMap[标签名]` 会命中 Object.prototype 上的成员并被当成真值，
+// 于是这个标签被替换成一个函数，随后又被判定为「不在标签列表里」而回落——改名结果错误且无报错。
+function toRenamedMap(input: unknown): Map<string, string> {
+  const renamed = new Map<string, string>();
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return renamed;
+  // 用 Object.entries 只取自有可枚举属性，不碰原型链。
+  for (const [from, to] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof to === 'string') renamed.set(from, to);
+  }
+  return renamed;
+}
+
+function toTagList(input: unknown): string[] {
+  return Array.isArray(input) ? input.filter((tag): tag is string => typeof tag === 'string') : [];
+}
+
 function sanitizeLLMConfigForStorage(config: LLMConfig): LLMConfig {
   const clean = { ...config };
   delete clean.apiKeyConfigured;
@@ -134,21 +156,107 @@ export class CommercialSQLDatabase {
     `);
     const applied = this.db.prepare('SELECT version FROM schema_migrations WHERE version = 1').get();
     if (!applied) {
-      const hadLegacySchema = this.tableExists('users') && !this.columnExists('users', 'status');
-      if (hadLegacySchema) {
-        this.renameLegacyTableIfNeeded('users');
-        this.renameLegacyTableIfNeeded('chat_sessions');
-        this.renameLegacyTableIfNeeded('orders');
-      }
-      this.createTables();
-      this.db.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (1)').run();
+      // 旧版结构（users 表存在但没有 status 列）整体改名让位，随后由下方统一的建表流程重建。
+      // 三步改名与写入 version 1 必须同属一个事务：迁移的判定条件正是它自己要破坏的那个状态
+      // （users 一改名就不存在了），若在改名与打标记之间中断，下一次启动会因为「没有旧版 users」
+      // 而跳过整段迁移，留下仍是旧结构的 chat_sessions / orders，此后每次启动都在结构校验处
+      // 抛错且无法自愈。放进事务后，中断只会整体回滚，下一次启动重新完整地做一遍。
+      const migrateLegacySchema = this.db.transaction(() => {
+        if (this.tableExists('users') && !this.columnExists('users', 'status')) {
+          this.renameLegacyTableIfNeeded('users');
+          this.renameLegacyTableIfNeeded('chat_sessions');
+          this.renameLegacyTableIfNeeded('orders');
+        }
+        this.db!.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (1)').run();
+      });
+      migrateLegacySchema();
     }
+    // 建表、补列、建索引都是幂等操作，必须每次启动都跑一遍。
+    // 此前这三步只在「首次创建 schema_migrations」时执行一次，已存在的库永远拿不到后来新增的
+    // 表与列，而且不报任何错——要等到某条 SQL 真正引用到缺失的列，才会在运行时以
+    // 「no such column」炸开，此时已很难回溯是哪次改动漏了同步。
+    this.createTables();
+    this.ensureColumns();
     this.createIndices();
   }
 
-  private createTables(): void {
+  // 建表语句声明了「结构应该长什么样」，但已存在的库不会再执行它（CREATE TABLE IF NOT EXISTS
+  // 对已存在的表是空操作），而 SQLite 的 ALTER TABLE ADD COLUMN 又有硬性限制：
+  // 不能加「NOT NULL 且无默认值」的列，也不能加默认值为表达式（如 datetime('now')）的列——
+  // 这两条恰好是本库最常用的写法，所以补列无法全自动，必须由开发者显式给出 DDL。
+  // 这里因此做两件事：先应用下方登记的新增列，再校验基线声明而真实库缺失的列有无遗漏，
+  // 有遗漏就启动即失败——把过去「静默缺列、直到运行时才报 no such column」提前到启动期暴露。
+  private ensureColumns(): void {
     if (!this.db) return;
-    this.db.exec(`
+    // 新增列登记在此：改结构时在基线建表语句与这里各写一次。第三项是完整的列定义；
+    // 若目标列带表达式默认值或 NOT NULL，需先加可空列、再 UPDATE 回填（ALTER TABLE 无法一步到位）。
+    const addedColumns: [table: string, column: string, definition: string][] = [];
+    for (const [table, column, definition] of addedColumns) {
+      if (this.columnExists(table, column)) continue;
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      console.log(`✅ 已为 ${table} 补加缺失列：${column}`);
+    }
+
+    const missing = this.checkSchemaDrift();
+    if (!missing.length) return;
+    // 正常的旧版迁移是原子的，不会留下新旧混杂的结构。若库里已经有 users_legacy_v1 却仍然缺列，
+    // 那多半是更早版本半迁移留下的残留——那种情况补 addedColumns 只会掩盖问题，必须人工处理。
+    const legacyHint = this.tableExists('users_legacy_v1')
+      ? '\n注意：本库已存在 users_legacy_v1（旧版结构改过名的痕迹），缺列可能是旧版迁移中断留下的新旧混杂结构。\n'
+        + '      这种情况补 addedColumns 解决不了，需要人工确认后把仍是旧结构的表改名或重建。'
+      : '';
+    throw new Error(
+      '数据库结构同步失败：以下列在建表语句中声明、但真实库中并不存在，且未登记到 ensureColumns 的 addedColumns：\n'
+      + missing.map(({ table, column }) => `  - ${table}.${column}`).join('\n')
+      + '\n请补进 addedColumns（带表达式默认值或 NOT NULL 的列需先加可空列再回填）。'
+      + legacyHint
+    );
+  }
+
+  // 把建表语句在一个内存库里还原成「期望结构」，与真实库逐列比对。
+  // 只有「缺列」是致命的并交回调用方；「多列」与「类型不一致」仅告警——
+  // 真实库可能带着已下线功能留下的历史列，把多列当成致命错误会让这些库直接起不来，
+  // 而类型靠 ALTER TABLE 也改不动。索引不在此列：createIndices 用的是
+  // CREATE INDEX IF NOT EXISTS，缺索引每次启动都会自动补上。
+  private checkSchemaDrift(): { table: string; column: string }[] {
+    const missing: { table: string; column: string }[] = [];
+    if (!this.db) return missing;
+    const expected = new Database(':memory:');
+    try {
+      expected.exec(CommercialSQLDatabase.SCHEMA_DDL);
+      const tables = expected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+      for (const { name } of tables) {
+        if (!this.tableExists(name)) continue;
+        const expectedColumns = expected.pragma(`table_info(${name})`) as { name: string; type: string }[];
+        const actualColumns = this.db.pragma(`table_info(${name})`) as { name: string; type: string }[];
+        const expectedNames = new Set(expectedColumns.map((column) => column.name));
+        for (const column of expectedColumns) {
+          const actual = actualColumns.find((item) => item.name === column.name);
+          if (!actual) {
+            missing.push({ table: name, column: column.name });
+          } else if (actual.type.toUpperCase() !== column.type.toUpperCase()) {
+            console.warn(`⚠️ ${name}.${column.name} 在库中类型为 ${actual.type || '(未声明)'}，建表语句声明的是 ${column.type || '(未声明)'}；ALTER TABLE 改不动类型，如需对齐请手写迁移`);
+          }
+        }
+        const extra = actualColumns.filter((column) => !expectedNames.has(column.name));
+        if (extra.length) {
+          console.warn(`⚠️ ${name} 存在建表语句未声明的列：${extra.map((column) => column.name).join('、')}（历史遗留，如已确认无用请手写迁移删除）`);
+        }
+      }
+    } finally {
+      expected.close();
+    }
+    return missing;
+  }
+
+  private createTables(): void {
+    if (this.db) this.db.exec(CommercialSQLDatabase.SCHEMA_DDL);
+  }
+
+  // 建表语句是数据库结构的唯一权威定义：既用它建表，也用它在一个内存库里还原出「期望结构」，
+  // 再与真实库逐列比对补齐（见 ensureColumns）。因此新增表或列只需要改这一处，
+  // 不必再维护第二份清单，也就不会出现「改了建表语句、老库却没同步」的遗漏。
+  private static readonly SCHEMA_DDL = `
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         phone TEXT UNIQUE,
@@ -274,8 +382,7 @@ export class CommercialSQLDatabase {
         user_agent TEXT,
         created_at TEXT NOT NULL
       );
-    `);
-  }
+`;
 
   private createIndices(): void {
     if (!this.db) return;
@@ -569,10 +676,18 @@ export class CommercialSQLDatabase {
     };
   }
 
-  public getSkills(): Skill[] {
-    if (!this.db) return [...INITIAL_SKILLS, ...INITIAL_MENTORS];
+  // 只返回库中真实存在的技能行，不含种子兜底。写操作必须走这个入口：
+  // getSkills() 的种子兜底是给「前台无数据时也能看到目录」用的只读便利，
+  // 一旦拿它去做 upsert，读的语义就悄悄变成了写。
+  private getPersistedSkills(): Skill[] {
+    if (!this.db) return [];
     const rows = this.db.prepare('SELECT * FROM skills ORDER BY search_count DESC, id ASC').all() as any[];
-    return rows.length ? rows.map((row) => this.mapSkillRow(row)) : [...INITIAL_SKILLS, ...INITIAL_MENTORS];
+    return rows.map((row) => this.mapSkillRow(row));
+  }
+
+  public getSkills(): Skill[] {
+    const skills = this.getPersistedSkills();
+    return skills.length ? skills : [...INITIAL_SKILLS, ...INITIAL_MENTORS];
   }
 
   public getSkillById(id: string): Skill | undefined {
@@ -616,10 +731,54 @@ export class CommercialSQLDatabase {
     return ['商业投资', '个人成长', '哲学心理', '经典策略'];
   }
 
-  public saveTags(tags: string[]): string[] {
-    const clean = Array.from(new Set(tags.filter((tag) => typeof tag === 'string' && tag.trim()))).slice(0, 50);
-    this.db?.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('tags', ?)").run(JSON.stringify(clean));
-    return clean;
+  // 标签是全平台的分类主键，每个技能都必须落在恰好一个分类上。
+  // 改名与删除会级联重写所有技能的 category 与 tags，因此必须整批成功或整批不生效——
+  // 中途失败留下半改状态，前台就会出现「一部分书在新分类、一部分还在旧分类」的错位。
+  public replaceTags(input: { tags: string[]; renamedMap?: Record<string, string>; deletedTags?: string[] }): { savedTags: string[]; affectedSkills: number } {
+    if (!this.db) return { savedTags: [], affectedSkills: 0 };
+    const savedTags = this.cleanTags(input.tags);
+    // 空列表直接返回、不落库：下方每个技能的 category 都要回落到 savedTags[0]，
+    // 没有可回落的值时会被统统写成空串，前台随即多出一个没有名字的分类。
+    if (!savedTags.length) return { savedTags, affectedSkills: 0 };
+    const renamedMap = toRenamedMap(input.renamedMap);
+    const deletedTags = toTagList(input.deletedTags);
+    const fallback = savedTags[0];
+    const tx = this.db.transaction(() => {
+      this.db!.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('tags', ?)").run(JSON.stringify(savedTags));
+      let affectedSkills = 0;
+      // 只遍历库里真实存在的技能行，不用 getSkills()：后者在 skills 表为空时会回落到种子
+      // 数据，而这里的 saveSkill() 会把传进去的对象写回库——一次标签操作就会把种子目录
+      // 重新插进数据库，等于凭空复活管理员刚删掉的书籍。
+      for (const skill of this.getPersistedSkills()) {
+        let changed = false;
+        if (skill.category) {
+          const renamed = renamedMap.get(skill.category);
+          if (renamed) { skill.category = renamed; changed = true; }
+          if (deletedTags.includes(skill.category) || !savedTags.includes(skill.category)) { skill.category = fallback; changed = true; }
+        } else {
+          skill.category = fallback;
+          changed = true;
+        }
+        if (Array.isArray(skill.tags)) {
+          let updated = skill.tags.map((tag) => renamedMap.get(tag) || tag);
+          updated = updated.filter((tag) => !deletedTags.includes(tag) && savedTags.includes(tag));
+          if (!updated.length) updated = [fallback];
+          if (JSON.stringify(updated) !== JSON.stringify(skill.tags)) { skill.tags = updated; changed = true; }
+        }
+        if (changed) { this.saveSkill(skill); affectedSkills++; }
+      }
+      return affectedSkills;
+    });
+    return { savedTags, affectedSkills: tx() };
+  }
+
+  // 取值本身必须 trim：只判断非空、原样存下的话，`' 商业投资 '` 会成为一个独立于
+  // `'商业投资'` 的标签，而下方 cascade 用的 savedTags.includes(category) 是精确匹配，
+  // 于是该标签下所有技能会被静默回落到第一个分类。
+  private cleanTags(tags: string[]): string[] {
+    if (!Array.isArray(tags)) return [];
+    const cleaned = tags.map((tag) => (typeof tag === 'string' ? tag.trim() : '')).filter(Boolean);
+    return Array.from(new Set(cleaned));
   }
 
   public getLLMConfig(): LLMConfig {

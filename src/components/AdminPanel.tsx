@@ -731,6 +731,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     });
   };
 
+  // 标签接口是「整批提交」语义：服务端要么全部生效、要么整体拒绝（例如删到只剩零个分类）。
+  // apiFetch 对 4xx 不会抛异常，此前各处只 await 不检查 res.ok，服务端明明拒绝了也照样弹
+  // 「已成功」提示——界面说改好了，刷新后又是原样。这里统一判定，失败时提示原因并回源复原。
+  const submitTags = async (payload: Record<string, unknown>): Promise<boolean> => {
+    let res: Response;
+    try {
+      // 与其他后台请求一样过 ensureAdminAuthorized：管理员会话失效时它负责把页面刷新回登录门。
+      // 不走这一步的话，挂机超时的管理员会先看到服务端的「需要管理员权限」——而他正是管理员。
+      res = await apiFetch('/api/admin/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(ensureAdminAuthorized);
+    } catch (e) {
+      // ensureAdminAuthorized 已经触发了刷新，这里不再叠加提示，也不要去回源拉取
+      console.warn('标签更新请求未完成:', e);
+      return false;
+    }
+    if (res.ok) return true;
+    const data = await res.json().catch(() => null);
+    alert(data?.message || '标签更新失败');
+    // 失败后回源拉取，把乐观更新过的本地状态复原成服务端的真实值
+    await fetchAdminData();
+    return false;
+  };
+
   // Category Operations - 100% Database Driven
   const handleRenameCategory = async (oldCategory: string, newCategory: string) => {
     if (!newCategory || !newCategory.trim() || oldCategory === newCategory) {
@@ -745,22 +771,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     const nextTags = dbCategories.map((c) => (c === oldCategory ? trimmed : c));
     setDbCategories(nextTags);
-    try {
-      await apiFetch('/api/admin/tags', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tags: nextTags,
-          renamedMap: { [oldCategory]: trimmed },
-        }),
-      });
-      window.dispatchEvent(new Event('category_order_updated'));
-    } catch (e) {
-      alert('更新标签失败');
-    }
+    const ok = await submitTags({ tags: nextTags, renamedMap: { [oldCategory]: trimmed } });
+    setEditingCategory(null);
+    if (!ok) return;
 
     showToast(`已成功将标签【${oldCategory}】更新为【${trimmed}】`);
-    setEditingCategory(null);
     fetchAdminData();
   };
 
@@ -781,19 +796,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       onConfirm: async () => {
         const nextTags = dbCategories.filter((c) => c !== catToDelete);
         setDbCategories(nextTags);
-        try {
-          await apiFetch('/api/admin/tags', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              tags: nextTags,
-              deletedTags: [catToDelete],
-            }),
-          });
-          window.dispatchEvent(new Event('category_order_updated'));
-        } catch (e) {
-          alert('删除标签失败');
-        }
+        if (!(await submitTags({ tags: nextTags, deletedTags: [catToDelete] }))) return;
 
         showToast(`已删除标签【${catToDelete}】`);
         fetchAdminData();
@@ -812,16 +815,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     const next = [...dbCategories, catName];
     setDbCategories(next);
-    try {
-      await apiFetch('/api/admin/tags', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tags: next }),
-      });
-      window.dispatchEvent(new Event('category_order_updated'));
-    } catch (e) {
-      alert('添加标签失败');
-    }
+    if (!(await submitTags({ tags: next }))) return;
 
     setNewCatInput('');
     setIsAddCategoryOpen(false);
@@ -838,16 +832,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     newCategoryNames.splice(targetIndex, 0, movedItem);
 
     setDbCategories(newCategoryNames);
-    try {
-      await apiFetch('/api/admin/tags', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tags: newCategoryNames }),
-      });
-      window.dispatchEvent(new Event('category_order_updated'));
-    } catch (e) {
-      console.error(e);
-    }
+    if (!(await submitTags({ tags: newCategoryNames }))) return;
 
     showToast(`已将【${movedItem}】调整至第 ${targetIndex + 1} 位`);
   };
@@ -879,20 +864,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     newCategoryNames.splice(dropIndex, 0, movedItem);
 
     setDbCategories(newCategoryNames);
-    try {
-      await apiFetch('/api/admin/tags', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tags: newCategoryNames }),
-      });
-      window.dispatchEvent(new Event('category_order_updated'));
-    } catch (e) {
-      console.error(e);
-    }
-
-    showToast(`已拖拽【${movedItem}】排序至第 ${dropIndex + 1} 位`);
     setDraggedIndex(null);
     setDragOverIndex(null);
+    if (!(await submitTags({ tags: newCategoryNames }))) return;
+
+    showToast(`已拖拽【${movedItem}】排序至第 ${dropIndex + 1} 位`);
   };
 
   // Tag Operations
