@@ -90,12 +90,12 @@ export async function createApp() {
     // 测试只验证 API，不挂载 Vite 前端中间件
   } else if (!IS_PROD) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
-    app.get('/leonchan1590', (_req, res) => res.redirect('/leonchan1590.html'));
+    app.get('/admin', (_req, res) => res.redirect('/admin.html'));
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('/leonchan1590', (_req, res) => res.sendFile(path.join(distPath, 'leonchan1590.html')));
+    app.get('/admin', (_req, res) => res.sendFile(path.join(distPath, 'admin.html')));
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 

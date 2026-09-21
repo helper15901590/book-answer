@@ -64,6 +64,8 @@ export const en: Dictionary = {
     newPasswordLabel: 'New password (at least {min} characters)',
     confirmPasswordLabel: 'Confirm new password',
     changeSuccess: 'Temporary password verified — now set your long-term password.',
+    showPassword: 'Show password',
+    hidePassword: 'Hide password',
     noticeChangePassword: 'Your first sign-in requires setting a password of at least {min} characters. Check the strength hint below.',
     noticeQuota: 'Your chat quota is used up. Sign in, or ask an administrator to adjust your membership.',
     noticeLoginRequired: 'Please sign in to use the AI chat.',

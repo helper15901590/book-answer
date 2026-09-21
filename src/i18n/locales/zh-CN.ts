@@ -65,6 +65,8 @@ export const zhCN = {
     newPasswordLabel: '新密码（至少 {min} 位）',
     confirmPasswordLabel: '确认新密码',
     changeSuccess: '临时密码验证成功，请设置新的长期密码。',
+    showPassword: '显示密码',
+    hidePassword: '隐藏密码',
     noticeChangePassword: '首次登录必须设置至少 {min} 位的新密码，请留意下方的强度提示。',
     noticeQuota: '当前对话额度已用完，请登录或联系管理员调整会员额度。',
     noticeLoginRequired: '请先登录后使用 AI 对话。',

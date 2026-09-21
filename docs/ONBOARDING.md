@@ -17,7 +17,7 @@
 ```text
 Browser
 ├── index.html → src/main.tsx → App → AiStudioWorkspace
-└── leonchan1590.html → admin-main.tsx → AdminGate → AdminPanel
+└── admin.html → admin-main.tsx → AdminGate → AdminPanel
 
 Express app (server/app.ts)
 ├── Helmet / rate limit / JSON / Cookie / CSRF

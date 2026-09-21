@@ -27,7 +27,7 @@ npm run dev
 ```
 
 用户入口：`http://localhost:3000/`
-管理后台：`http://localhost:3000/leonchan1590`
+管理后台：`http://localhost:3000/admin`
 
 ## 认证与权限
 

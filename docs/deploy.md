@@ -100,7 +100,7 @@ docker compose --env-file .env -f docker/compose.yaml up -d --build
 
 ## 5. 首次管理员登录
 
-1. 打开 `https://域名/leonchan1590`。
+1. 打开 `https://域名/admin`。
 2. 输入 `ADMIN_PHONE` 和 `ADMIN_PASSWORD`。
 3. 系统要求绑定 TOTP，显示 Base32 密钥和 8 个恢复码。
 4. 恢复码仅显示一次，必须离线保存。

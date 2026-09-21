@@ -63,6 +63,8 @@ export const zhTW: Dictionary = {
     newPasswordLabel: '新密碼（至少 {min} 位）',
     confirmPasswordLabel: '確認新密碼',
     changeSuccess: '臨時密碼驗證成功，請設定新的長期密碼。',
+    showPassword: '顯示密碼',
+    hidePassword: '隱藏密碼',
     noticeChangePassword: '首次登入必須設定至少 {min} 位的新密碼，請留意下方的強度提示。',
     noticeQuota: '目前對話額度已用完，請登入或聯絡管理員調整會員額度。',
     noticeLoginRequired: '請先登入後使用 AI 對話。',

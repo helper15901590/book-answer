@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { UserProfile, LLMConfig, AuthPolicy } from '../types';
-import { X, Phone, ShieldCheck, AlertTriangle, LockKeyhole } from 'lucide-react';
+import { X, Phone, ShieldCheck, AlertTriangle, LockKeyhole, Eye, EyeOff } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY } from '../data/initialData';
 import { evaluatePasswordStrength } from '../lib/passwordStrength';
@@ -22,6 +22,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose, reas
   const [step, setStep] = useState<'login' | 'change_password'>('login');
   const [agreed, setAgreed] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [viewingAgreement, setViewingAgreement] = useState<'terms' | 'privacy' | null>(null);
   const { t } = useI18n();
@@ -91,8 +92,20 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose, reas
           ) : (
             <form onSubmit={submitPasswordChange} className="space-y-3">
               <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 rounded-lg p-3"><ShieldCheck className="w-4 h-4" />{t('login.changeSuccess')}</div>
-              <label className="block text-[11px] font-medium text-gray-500">{t('login.newPasswordLabel', { min: minLength })}</label>
-              <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-gray-900" />
+              <div className="flex items-center justify-between">
+                <label className="block text-[11px] font-medium text-gray-500">{t('login.newPasswordLabel', { min: minLength })}</label>
+                {/* 首登改密要连输两遍，看不清时很容易输错；这个按钮同时切换两个框的可见性 */}
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-pressed={showPassword}
+                  className="inline-flex items-center gap-1 text-[11px] text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
+                >
+                  {showPassword ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                  {showPassword ? t('login.hidePassword') : t('login.showPassword')}
+                </button>
+              </div>
+              <input type={showPassword ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-gray-900" />
               {strength && (
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
@@ -105,7 +118,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose, reas
                 </div>
               )}
               <label className="block text-[11px] font-medium text-gray-500">{t('login.confirmPasswordLabel')}</label>
-              <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-gray-900" />
+              <input type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-gray-900" />
               {errorMsg && <p className="text-xs text-rose-600">{errorMsg}</p>}
               <button disabled={isSubmitting} className="w-full py-2.5 rounded-lg bg-gray-900 text-white text-xs font-semibold disabled:opacity-50">{isSubmitting ? t('login.submitSaving') : t('login.submitChange')}</button>
             </form>

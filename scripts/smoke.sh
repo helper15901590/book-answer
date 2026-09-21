@@ -18,7 +18,7 @@ check "public skills no systemPrompt" "0" "$(curl -s "$BASE/api/skills" | grep -
 check "unauthenticated sessions 401" "401" "$(code "$BASE/api/chat/sessions")"
 check "forged userId still 401" "401" "$(code "$BASE/api/chat/sessions?userId=usr_forged")"
 check "public questions endpoint removed" "404" "$(code -X POST "$BASE/api/skills/generate-questions" -H 'Content-Type: application/json' -d '{}')"
-check "admin entry reachable" "1" "$(code -L "$BASE/leonchan1590" | grep -Ec '^(200|302)$')"
+check "admin entry reachable" "1" "$(code -L "$BASE/admin" | grep -Ec '^(200|302)$')"
 check "unknown API 404" "404" "$(code "$BASE/api/nonexistent")"
 if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_PASSWORD:-}" ]; then
   LOGIN=$(curl -s -c "$JAR" -b "$JAR" -X POST "$BASE/api/admin/login" -H "Origin: $ORIGIN" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"password\":\"$ADMIN_PASSWORD\",\"secondPassword\":\"${ADMIN_SECOND_PASSWORD:-}\"}")
