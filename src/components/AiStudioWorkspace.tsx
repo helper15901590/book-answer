@@ -888,8 +888,22 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                   <div className="pb-2 border-b border-gray-100">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="text-xs font-bold text-gray-900 truncate">
-                          {formatUserDisplayName(user.nickname)}
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-gray-900">
+                          <span className="truncate">{formatUserDisplayName(user.nickname)}</span>
+                          {/* 注销入口：不可恢复的操作，做成跟昵称同排的小符号，尽量不抢视觉；
+                              真正的确认放在点击后展开的弹窗里 */}
+                          <button
+                            onClick={() => {
+                              setIsUserMenuOpen(false);
+                              setDeleteConfirmText('');
+                              setIsDeleteAccountOpen(true);
+                            }}
+                            title={t('workspace.deleteAccount')}
+                            aria-label={t('workspace.deleteAccount')}
+                            className="shrink-0 text-gray-300 hover:text-rose-500 transition-colors cursor-pointer"
+                          >
+                            <UserX className="w-3 h-3" />
+                          </button>
                         </div>
                         <div onContextMenu={handleCopyUserId} className="text-[11px] text-gray-400 font-mono mt-0.5">
                           ID: {user.id.replace(/^usr_/, '')}
@@ -951,28 +965,14 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                           className="w-full py-2 bg-[#f4efe6] hover:bg-[#eae1d0] text-[#2c221e] border border-[#ded3be] rounded-xl text-xs font-bold text-center transition-all cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
                         >
                           <Crown className="w-3.5 h-3.5 text-[#8c6227]" />
-                          会员订阅
+                          {t('workspace.membershipEntry')}
                         </button>
                         <button
                           onClick={handleLogout}
                           className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200 flex items-center justify-center gap-1.5"
                         >
                           <LogOut className="w-3.5 h-3.5" />
-                          退出登录
-                        </button>
-                        {/* 注销账号不可恢复，刻意做成不显眼的小符号避免误触；
-                            真正的确认放在点击后展开的弹窗里，要求输入完整短语 */}
-                        <button
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            setDeleteConfirmText('');
-                            setIsDeleteAccountOpen(true);
-                          }}
-                          title={t('workspace.deleteAccount')}
-                          aria-label={t('workspace.deleteAccount')}
-                          className="w-full flex items-center justify-center py-1 text-gray-400 hover:text-rose-500 transition-colors cursor-pointer"
-                        >
-                          <UserX className="w-3.5 h-3.5" />
+                          {t('workspace.logout')}
                         </button>
                       </>
                     )}
