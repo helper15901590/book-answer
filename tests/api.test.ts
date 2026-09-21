@@ -10,6 +10,10 @@ let createApp: any;
 let adminAgent: any;
 let adminCsrf = '';
 let adminTotpSecret = '';
+// 管理员两个 Cookie 的 Max-Age，在用例三建立管理员会话时采集。
+// 不另开一次登录来取：管理员鉴权端点是 10 次/分钟的限流，而整个测试文件共享同一个 IP。
+let adminSessionMaxAge = 0;
+let adminCsrfMaxAge = 0;
 let userAgent: any;
 let userCsrf = '';
 const userPassword = 'UserStrongPass123';
@@ -22,8 +26,7 @@ function setCookieHeader(response: request.Response, name: string): string {
 }
 
 function cookieValue(response: request.Response, name: string): string {
-  const item = setCookieHeader(response, name);
-  return item ? item.split(';')[0].slice(name.length + 1) : '';
+  return setCookieHeader(response, name).split(';')[0].slice(name.length + 1);
 }
 
 // 取某个 Cookie 的 Max-Age；会话级 Cookie（不带 Max-Age）返回 0。
@@ -69,6 +72,8 @@ describe('commercial MVP API', () => {
     const confirm = await admin.post('/api/admin/mfa/confirm').set('Origin', 'http://127.0.0.1:3000').send({ code }).expect(200);
     expect(confirm.body.user.role).toBe('admin');
     adminCsrf = cookieValue(confirm, 'book_answer_admin_csrf');
+    adminSessionMaxAge = cookieMaxAge(confirm, 'book_answer_admin_session');
+    adminCsrfMaxAge = cookieMaxAge(confirm, 'book_answer_admin_csrf');
     expect(adminCsrf).not.toBe('');    const llmView = await admin.get('/api/admin/llm-config').set('Origin', 'http://127.0.0.1:3000').expect(200);
     expect(llmView.body.llmConfig).not.toHaveProperty('apiKey');
 
@@ -150,11 +155,8 @@ describe('commercial MVP API', () => {
     expect(csrfMaxAge).toBeGreaterThan(0);
 
     // 管理员端走的是同一个 setCsrfCookie，也断言一次：否则将来只改回一边也不会有测试报错。
-    const admin = request.agent(app);
-    await admin.post('/api/admin/login').set('Origin', 'http://127.0.0.1:3000').send({ phone: '13800000000', password: 'AdminPass12345678!' }).expect(200);
-    const adminVerify = await admin.post('/api/admin/mfa/verify').set('Origin', 'http://127.0.0.1:3000').send({ code: generateSync({ secret: adminTotpSecret }) }).expect(200);
-    const adminCsrfMaxAge = cookieMaxAge(adminVerify, 'book_answer_admin_csrf');
-    expect(adminCsrfMaxAge).toBe(cookieMaxAge(adminVerify, 'book_answer_admin_session'));
+    // 数据取自用例三建立管理员会话时的响应，不在这里重新登录一次。
+    expect(adminCsrfMaxAge).toBe(adminSessionMaxAge);
     expect(adminCsrfMaxAge).toBeGreaterThan(0);
 
     const csrf = cookieValue(changed, 'book_answer_user_csrf');

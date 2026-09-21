@@ -93,7 +93,7 @@ export function registerAuthRoutes(app: Express): void {
   // 用户自助注销。是**硬删除**：连带清空对话记录、登录会话、配额账本与改密凭证，不可恢复。
   // 因此要求用户主动输入确认短语——这是不可逆操作，必须有明确的确认动作，不能只靠点按钮。
   // 短语本身定义在 src/i18n/deleteAccountPhrase.ts：三份字典与服务端共用同一份常量，
-  // 服务端只引那个叶子模块，避免为了三条短语把整份字典打进 bundle（曾使产物增大 27.9%）。
+  // 服务端只引那个叶子模块，避免为了三条短语把整份字典打进 bundle。
   app.post('/api/auth/delete-account', requireUser, asyncJsonHandler<AuthRequest>(async (req, res) => {
     const submitted = String(req.body?.confirm || '').trim().toLowerCase();
     const accepted = DELETE_ACCOUNT_PHRASES.some((phrase) => phrase.toLowerCase() === submitted);

@@ -11,9 +11,11 @@ export const DELETE_ACCOUNT_PHRASE_ZH_CN = '我确认注销';
 export const DELETE_ACCOUNT_PHRASE_ZH_TW = '我確認註銷';
 export const DELETE_ACCOUNT_PHRASE_EN = 'delete my account';
 
-// 服务端接受的短语集合（三种界面语言各一条）。顺序无关紧要：
-// 比对用的是 includes，不是按下标取值。
-export const DELETE_ACCOUNT_PHRASES: string[] = [
+// 服务端接受的短语集合（三种界面语言各一条）。顺序无关紧要：比对用的是 includes，
+// 不是按下标取值。声明为 readonly——它直接决定认证校验的行为，不该被引入方改写。
+// （上面那句「不要加 as const」只针对三个字符串常量：它们若收窄成字面量，字典的键类型
+//   会跟着收窄，en.ts / zh-TW.ts 直接编译失败；数组本身不受这条影响。）
+export const DELETE_ACCOUNT_PHRASES: readonly string[] = [
   DELETE_ACCOUNT_PHRASE_ZH_CN,
   DELETE_ACCOUNT_PHRASE_ZH_TW,
   DELETE_ACCOUNT_PHRASE_EN,
