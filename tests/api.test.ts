@@ -179,6 +179,33 @@ describe('commercial MVP API', () => {
     await agent.get('/api/auth/me').expect(401);
   });
 
+  // 两种拒绝曾经共用 CSRF_REJECTED：前端按错误码查表翻译，于是「APP_ORIGIN 配错」这类运维
+  // 问题在界面上和「浏览器令牌不对」显示同一句话，排查只能靠猜。这两条分支此前零覆盖，
+  // 钉住错误码才能防止将来又被合并回去。
+  it('distinguishes a mismatched request origin from a bad CSRF token', async () => {
+    // 来源不符：令牌完全正确也必须拒，且错误码要与令牌不符区分开
+    const wrongOrigin = await userAgent.post('/api/chat/sessions')
+      .set('Origin', 'http://wrong-origin.example')
+      .set('X-CSRF-Token', userCsrf)
+      .send({ skillId: 'skill-santi' })
+      .expect(403);
+    expect(wrongOrigin.body.error).toBe('ORIGIN_REJECTED');
+
+    // 令牌不符：来源正确，但请求头没带令牌（服务端要求请求头与 Cookie 两侧都匹配）
+    const noToken = await userAgent.post('/api/chat/sessions')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .send({ skillId: 'skill-santi' })
+      .expect(403);
+    expect(noToken.body.error).toBe('CSRF_REJECTED');
+
+    // 同一个请求带上正确令牌必须放行：否则上面两条 403 可能另有原因，断言就白写了
+    await userAgent.post('/api/chat/sessions')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', userCsrf)
+      .send({ skillId: 'skill-santi' })
+      .expect(200);
+  });
+
   it('refuses to empty the tag list and cascades tag renames to skills', async () => {
     const before: string[] = db.getTags();
     expect(before.length).toBeGreaterThan(0);

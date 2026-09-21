@@ -81,6 +81,8 @@ interface AdminStats {
   peakConcurrentSse: number;
   totalRequestsServed: number;
   requestsLastMinute: number;
+  csrfOriginRejected: number;
+  csrfTokenRejected: number;
   uptimeHours: number;
 }
 
@@ -1226,6 +1228,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     {statCard('近 1 分钟请求', stats.requestsLastMinute, `累计服务 ${stats.totalRequestsServed} 次`)}
                     {statCard('当前 SSE 连接', stats.activeSseConnections, '正在流式对话的连接数')}
                     {statCard('SSE 并发峰值', stats.peakConcurrentSse, '本次运行期内最高值')}
+                    {/* 两种 CSRF 拒绝成因不同，分开计数才能一眼看出该找谁修：来源不符是 APP_ORIGIN
+                        配错（运维），令牌不符是浏览器 Cookie 与会话对不上（用户侧）。 */}
+                    {statCard('CSRF 拒绝·来源', stats.csrfOriginRejected, 'Origin 与 APP_ORIGIN 不符，累计')}
+                    {statCard('CSRF 拒绝·令牌', stats.csrfTokenRejected, '请求头或 Cookie 与会话不符，累计')}
                   </div>
                 </div>
               </div>

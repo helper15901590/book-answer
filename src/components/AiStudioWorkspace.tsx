@@ -646,7 +646,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           showToast(serverMessage(errJson, t, 'workspace.loginRequired'), 'warning');
           onTriggerLogin401();
         } else if (response.status === 402 || response.status === 403 || response.status === 429) {
-          showToast(serverMessage(errJson, t, 'workspace.quotaExhausted'), 'info');
+          // CSRF 被拒不是额度问题，而是「这个浏览器当前发不出写请求」，用户需要照提示手动恢复。
+          // 与额度提示混在同一个 info 级、一闪而过的 toast 里，真正的原因就会被当成额度用尽而错过。
+          const csrfBlocked = errJson.error === 'CSRF_REJECTED' || errJson.error === 'ORIGIN_REJECTED';
+          showToast(serverMessage(errJson, t, 'workspace.quotaExhausted'), csrfBlocked ? 'warning' : 'info');
         }
         throw new Error(errJson.message || errJson.error || `HTTP ${response.status}`);
       }

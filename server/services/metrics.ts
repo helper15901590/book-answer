@@ -5,6 +5,10 @@ export const metrics = {
   requestsLastMinute: 0,
   peakConcurrentSse: 0,
   totalAiTokensEstimated: 0,
+  // CSRF 拒绝按原因分开计数。两者成因完全不同（前者是 APP_ORIGIN 配错这类运维问题，
+  // 后者是浏览器 Cookie 与会话对不上），合在一起就只能看出「有拒绝」，看不出该找谁修。
+  csrfOriginRejected: 0,
+  csrfTokenRejected: 0,
   startTime: Date.now(),
 };
 

@@ -15,7 +15,8 @@ import {
   USER_SESSION_TTL_MS,
 } from '../config.js';
 import { randomToken, safeEqual, sha256 } from '../services/security.js';
-import { touchUser } from '../services/metrics.js';
+import { metrics, touchUser } from '../services/metrics.js';
+import { logger } from '../services/logger.js';
 
 export const ADMIN_ACCOUNT_ID = 'admin';
 const COOKIE_BASE = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const };
@@ -173,6 +174,13 @@ export function requireAdmin(req: AuthRequest, res: Response, next: NextFunction
   next();
 }
 
+// Origin 头与请求路径都由客户端控制，单个头上限 16KB（Node 默认 max-http-header-size）。
+// 原样落盘的话一次拒绝就能写十几 KB，而日志轮转只有 10m×3——几分钟的刷流量就能把这条
+// 诊断信息本身挤出轮转，恰好在需要它的时候消失。截断到诊断所需的最小长度即可。
+function clipForLog(value: string, max = 200): string {
+  return value.length > max ? `${value.slice(0, max)}…(+${value.length - max}B)` : value;
+}
+
 export function csrfProtection(req: AuthRequest, res: Response, next: NextFunction): void {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
     next();
@@ -190,7 +198,13 @@ export function csrfProtection(req: AuthRequest, res: Response, next: NextFuncti
   const origin = req.get('origin');
   const expectedOrigin = APP_ORIGIN.replace(/\/+$/, '');
   if (origin && expectedOrigin && origin.replace(/\/+$/, '') !== expectedOrigin) {
-    res.status(403).json({ error: 'CSRF_REJECTED', message: '请求来源无效' });
+    // 来源不符与令牌不符是两回事：前者是 APP_ORIGIN 配错（运维问题，刷新页面永远不会好），
+    // 后者是浏览器 Cookie 与会话对不上。此前两者共用 CSRF_REJECTED，前端按码翻译后同样显示
+    // 「安全令牌无效」，会把配置问题伪装成用户侧令牌问题。分开码，并在日志里留下双方原值——
+    // Origin 不是秘密，这正是定位该问题所需的最小信息。
+    logger.warn({ route: clipForLog(routePath), origin: clipForLog(origin), expectedOrigin }, 'CSRF 来源校验拒绝');
+    metrics.csrfOriginRejected++;
+    res.status(403).json({ error: 'ORIGIN_REJECTED', message: '请求来源无效' });
     return;
   }
   if (!req.authSession) {
@@ -202,7 +216,21 @@ export function csrfProtection(req: AuthRequest, res: Response, next: NextFuncti
   const validHeader = headerToken && safeEqual(sha256(headerToken), req.authSession.csrfHash);
   const validCookie = cookieToken && safeEqual(sha256(cookieToken), req.authSession.csrfHash);
   if (!validHeader || !validCookie) {
-    res.status(403).json({ error: 'CSRF_REJECTED', message: '安全令牌无效，请刷新页面后重试' });
+    // 只记录「有没有、对不对」，绝不记录令牌本身。头与 Cookie 只要一侧缺失或与会话不匹配就会
+    // 落到这里，分开记才能立刻区分「浏览器没存下 CSRF Cookie」与「Cookie 属于另一个会话」。
+    logger.warn({
+      route: clipForLog(routePath),
+      sessionId: req.authSession.id,
+      sessionKind: req.sessionKind,
+      hasHeader: Boolean(headerToken),
+      hasCookie: Boolean(cookieToken),
+      headerMatches: Boolean(validHeader),
+      cookieMatches: Boolean(validCookie),
+    }, 'CSRF 令牌校验拒绝');
+    metrics.csrfTokenRejected++;
+    // 这条建议必须是用户做得到的动作：令牌对不上时登出请求本身也受 CSRF 保护、必定 403，
+    // 所以「请退出后重新登录」是走不通的，只有清掉本站 Cookie 才能拿到一对匹配的凭证。
+    res.status(403).json({ error: 'CSRF_REJECTED', message: '安全令牌已失效，请清除本站点的 Cookie 后重新登录' });
     return;
   }
   next();

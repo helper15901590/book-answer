@@ -183,6 +183,8 @@ export function registerAdminRoutes(app: Express): void {
         requestsLastMinute: metrics.requestsLastMinute,
         activeSseConnections: metrics.activeSseConnections,
         peakConcurrentSse: metrics.peakConcurrentSse,
+        csrfOriginRejected: metrics.csrfOriginRejected,
+        csrfTokenRejected: metrics.csrfTokenRejected,
         uptimeHours: Number(((Date.now() - metrics.startTime) / 3_600_000).toFixed(1)),
       },
     });
