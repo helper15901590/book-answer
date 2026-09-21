@@ -119,6 +119,8 @@ export const zhCN = {
     AI_UNAVAILABLE: 'AI 服务暂时不可用，请稍后重试',
     RATE_LIMITED: '请求过于频繁，请稍后再试',
     INTERNAL_ERROR: '服务器内部错误，请稍后重试',
+    CONFIRMATION_MISMATCH: '确认文本不匹配，请输入完整短语后重试',
+    DELETE_FAILED: '注销失败，请稍后重试或联系管理员',
   },
   workspace: {
     bookPlaza: '书籍广场',
@@ -128,6 +130,7 @@ export const zhCN = {
     newSession: '新建对话',
     login: '登录',
     logout: '退出登录',
+    logoutFailed: '退出登录失败，登录状态可能仍然有效',
     deleteAccount: '注销账号',
     deleteAccountTitle: '确认注销账号？',
     deleteAccountBody: '此操作不可恢复：你的账号、全部对话记录、会员权益与剩余额度都会被永久删除。请输入「{phrase}」以继续。',

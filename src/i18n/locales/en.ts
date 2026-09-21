@@ -118,6 +118,8 @@ export const en: Dictionary = {
     AI_UNAVAILABLE: 'The AI service is temporarily unavailable, please try again later',
     RATE_LIMITED: 'Too many requests, please try again later',
     INTERNAL_ERROR: 'Server error, please try again later',
+    CONFIRMATION_MISMATCH: 'Confirmation text does not match — type the full phrase and retry',
+    DELETE_FAILED: 'Account deletion failed. Please retry later or contact the administrator',
   },
   workspace: {
     bookPlaza: 'Books',
@@ -127,6 +129,7 @@ export const en: Dictionary = {
     newSession: 'New chat',
     login: 'Sign in',
     logout: 'Sign out',
+    logoutFailed: 'Sign-out failed — you may still be signed in',
     deleteAccount: 'Delete account',
     deleteAccountTitle: 'Delete your account?',
     deleteAccountBody: 'This cannot be undone — your account, all conversations, membership benefits and remaining quota will be permanently deleted. Type “{phrase}” to continue.',

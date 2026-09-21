@@ -23,14 +23,17 @@ export const LanguageSwitcher: React.FC = () => {
   // 按钮上的缩写指向「要切到的语言」，悬停提示得把这层关系讲清楚：
   // 否则按钮写着 En、悬停却显示「简体中文」，会让人以为哪一边错了。
   const switchTo: Locale = locale === 'en' ? 'zh-CN' : 'en';
+  // 无障碍名必须包含可见文字（WCAG 2.5.3 Label in Name）：按钮写着「En」，
+  // 若 aria-label 只报当前语言「简体中文」，语音控制用户照可见文字念「点击 En」会失败。
+  const switchHint = `${LOCALE_SWITCH_LABEL[locale]}（${LOCALE_LABEL[locale]} → ${LOCALE_LABEL[switchTo]}）`;
 
   return (
     <div className="relative">
       <button
         type="button"
         onClick={() => setIsOpen((v) => !v)}
-        title={`${LOCALE_LABEL[locale]} → ${LOCALE_LABEL[switchTo]}`}
-        aria-label={LOCALE_LABEL[locale]}
+        title={switchHint}
+        aria-label={switchHint}
         aria-haspopup="menu"
         aria-expanded={isOpen}
         className="flex items-center justify-center min-w-7 h-7 px-1.5 rounded-full text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 cursor-pointer transition-colors"

@@ -290,6 +290,10 @@ export class CommercialSQLDatabase {
       CREATE INDEX IF NOT EXISTS idx_auth_sessions_subject ON auth_sessions(subject_type, subject_id);
       CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_auth_challenges_expiry ON auth_challenges(expires_at);
+      -- deleteUser 事务里按 subject_id 清挑战，缺这个索引会全表扫描。
+      -- 注意 auth_challenges 没有 subject_type 列（那是 auth_sessions 才有的），
+      -- 挑战的类型存在 type 列里，这里不能照抄 auth_sessions 的复合索引。
+      CREATE INDEX IF NOT EXISTS idx_auth_challenges_subject ON auth_challenges(subject_id);
       CREATE INDEX IF NOT EXISTS idx_quota_user ON quota_ledger(user_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_orders_trade_no ON orders(trade_no);

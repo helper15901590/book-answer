@@ -524,11 +524,21 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     showToast(copied ? t('workspace.userIdCopied', { id: user.id }) : t('workspace.copyFailed'), copied ? 'success' : 'warning');
   };
 
+  // 注销短语的匹配必须与服务端口径一致（忽略大小写与首尾空白）：服务端的
+  // DELETE_ACCOUNT_PHRASES 就是这么比的。前端若更严，英文用户在移动端被键盘自动
+  // 大写了首字母时，按钮会永远置灰、且不给出任何原因，而同样的文本服务端本来会接受。
+  const deletePhraseMatches =
+    deleteConfirmText.trim().toLowerCase() === t('workspace.deleteAccountPhrase').toLowerCase();
+
   const handleLogout = async () => {
     try {
-      await apiFetch('/api/auth/logout', { method: 'POST' });
+      const res = await apiFetch('/api/auth/logout', { method: 'POST' });
+      // apiFetch 对非 2xx 不抛异常，必须显式检查：登出失败时会话仍然有效，
+      // 而 App 在 focus / visibilitychange 时会重拉 /api/auth/me，用户切一下标签页就会被自动登回来。
+      if (!res.ok) showToast(t('workspace.logoutFailed'), 'warning');
     } catch (e) {
       console.warn('Logout API error:', e);
+      showToast(t('workspace.logoutFailed'), 'warning');
     }
     setUser(null);
     setSessions([]);
@@ -541,7 +551,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   // 按钮在输入短语完全匹配前保持禁用，服务端还会再校验一次——客户端这道只是第一层门槛，
   // 真正的防线在服务端，因为前端校验可以被绕过。
   const handleDeleteAccount = async () => {
-    if (isDeletingAccount || deleteConfirmText.trim() !== t('workspace.deleteAccountPhrase')) return;
+    if (isDeletingAccount || !deletePhraseMatches) return;
     setIsDeletingAccount(true);
     try {
       const res = await apiFetch('/api/auth/delete-account', {
@@ -1408,7 +1418,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               </button>
               <button
                 onClick={handleDeleteAccount}
-                disabled={isDeletingAccount || deleteConfirmText.trim() !== t('workspace.deleteAccountPhrase')}
+                disabled={isDeletingAccount || !deletePhraseMatches}
                 className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
               >
                 {t('workspace.deleteAccountConfirm')}
@@ -1455,7 +1465,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               <h3 className="text-base font-bold text-gray-900 font-serif flex items-center gap-2">
                 <span>{t('workspace.allBookTags')}</span>
                 <span className="text-xs font-sans font-normal text-gray-500">
-                  (共 {categories.length} 个标签)
+                  {t('workspace.tagsCount', { count: categories.length })}
                 </span>
               </h3>
               <button
@@ -1499,7 +1509,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               <h3 className="text-base font-bold text-gray-900 font-serif flex items-center gap-2">
                 <span>{t('workspace.allMentorTags')}</span>
                 <span className="text-xs font-sans font-normal text-gray-500">
-                  (共 {categories.length} 个标签)
+                  {t('workspace.tagsCount', { count: categories.length })}
                 </span>
               </h3>
               <button

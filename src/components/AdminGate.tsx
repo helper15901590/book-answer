@@ -127,7 +127,7 @@ export const AdminGate: React.FC = () => {
       loggedOut = false;
     }
     if (!loggedOut) {
-      alert('退出登录失败，当前会话可能仍然有效。请重试，或直接关闭浏览器。');
+      alert('退出登录失败，当前会话可能仍然有效。请重试；若反复失败，请清除本站点的 Cookie。');
       return;
     }
     window.location.href = '/';

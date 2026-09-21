@@ -15,6 +15,8 @@ import { PASSWORD_CHANGE_COOKIE, CHALLENGE_TTL_MS, COOKIE_SECURE } from '../conf
 import { sha256 } from '../services/security.js';
 import { BCRYPT_ROUNDS, USER_PASSWORD_MIN_LENGTH, validateStrongPassword } from '../services/password.js';
 import { asyncJsonHandler } from '../middleware/asyncHandler.js';
+import { dictionaries } from '../../src/i18n/locales/index.js';
+import { LOCALES } from '../../src/i18n/types.js';
 
 const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '尝试过于频繁，请稍后再试' } });
 // 改密单独用一个计数桶：首次登录必须走「登录 → 强制改密」两次请求，若与登录共用同一个桶，
@@ -24,10 +26,10 @@ const loginSchema = z.object({ phone: z.string().trim().regex(/^\d{11}$/), passw
 const passwordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(USER_PASSWORD_MIN_LENGTH).max(128) });
 const COOKIE_BASE = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const, path: '/' };
 
-// 注销账号的确认短语。三种界面语言各有一个、服务端全部接受——英文界面下要求用户输入
-// 中文短语说不通。必须与 src/i18n/locales/*.ts 的 workspace.deleteAccountPhrase 保持一致，
-// 改一处要同时改另一处；对大小写不敏感，避免英文用户因大小写差异反复失败。
-const DELETE_ACCOUNT_PHRASES = ['我确认注销', '我確認註銷', 'delete my account'];
+// 注销确认短语的唯一来源是 i18n 字典。此前在服务端硬编码了一份副本（靠注释约定同步），
+// 而项目约定明确允许「只改 en.ts 里的值」——一旦有人改了字典，服务端会比对新旧串不一致，
+// 英文用户就会永久收到 CONFIRMATION_MISMATCH 而无法注销，且 lint 与测试全绿。
+const DELETE_ACCOUNT_PHRASES = LOCALES.map((locale) => dictionaries[locale].workspace.deleteAccountPhrase);
 
 function genericLoginFailure(res: Response): void {
   res.status(401).json({ error: 'INVALID_CREDENTIALS', message: '账号或密码错误' });

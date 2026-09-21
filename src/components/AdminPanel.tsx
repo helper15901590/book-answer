@@ -215,9 +215,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [openSkillMenuId, setOpenSkillMenuId] = useState<string | null>(null);
   const [openCatMenuName, setOpenCatMenuName] = useState<string | null>(null);
 
-  // 打开技能弹窗时「热度」的原值。热度由管理员设定初始值、服务端再随浏览自增，
-  // 若管理员没动这个输入框就不回传，否则会把弹窗打开期间累积的浏览增量覆盖掉。
-  const [skillSearchCountAtOpen, setSkillSearchCountAtOpen] = useState<number | null>(null);
+  // 热度由管理员设定初始值、服务端再随浏览自增，两者共用同一个列。
+  // 保存时若管理员没动过这个输入框就不回传，让服务端保留库中当前值，
+  // 以免把弹窗打开期间累积的浏览自增覆盖掉。
+  // 这里用「是否编辑过」的显式标记，而不是「值是否等于打开时的快照」——后者会把
+  // 「管理员明确写入一个恰好等于快照的值」（例如想把热度钉在 0）误判为未改动而静默丢弃。
+  const [skillHeatEdited, setSkillHeatEdited] = useState(false);
 
   // Skill Modal State
   const [editingSkill, setEditingSkill] = useState<Partial<Skill> | null>(null);
@@ -590,13 +593,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!skillId) return;
     setRefreshingHeat(true);
     try {
-      const res = await fetch(`/api/skills/${skillId}`);
+      const res = await apiFetch(`/api/skills/${skillId}`);
       const data = await res.json().catch(() => ({}));
       const latest = data?.skill?.searchCount;
       if (typeof latest !== 'number') throw new Error('unexpected payload');
       setEditingSkill((prev) => (prev ? { ...prev, searchCount: latest } : null));
-      // 基准值一起更新：刚同步到的数字并未被管理员改动，保存时不应回传。
-      setSkillSearchCountAtOpen(latest);
+      // 刻意不标记为「已编辑」：同步到的就是库中当前值，保存时不回传反而更好——
+      // 服务端会保留最新数字，强行回传只会丢掉同步之后又累积的浏览自增。
       showToast('已同步最新热度');
     } catch {
       showToast('同步热度失败，请重试');
@@ -668,8 +671,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       category: primaryCat,
       tags: validTags,
     };
-    // 管理员未改动热度时不回传：服务端会保留库中当前值，弹窗打开期间的浏览自增不会被抹掉。
-    if (skillSearchCountAtOpen !== null && skillToSave.searchCount === skillSearchCountAtOpen) {
+    // 编辑既有技能时，管理员没动过热度就不回传：服务端会保留库中当前值，
+    // 弹窗打开期间累积的浏览自增不会被抹掉。新建技能没有 id，热度是表单默认值，必须照传。
+    if (editingSkill.id && !skillHeatEdited) {
       delete skillToSave.searchCount;
     }
 
@@ -1322,7 +1326,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           systemPrompt: '你是一位深度理解原著的导师。',
                           skillType: 'book',
                         });
-                        setSkillSearchCountAtOpen(null);
+                        setSkillHeatEdited(false);
                         setIsSkillModalOpen(true);
                       }}
                       className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs shrink-0"
@@ -1415,7 +1419,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                         <button
                                           onClick={() => {
                                             setEditingSkill(s);
-                                            setSkillSearchCountAtOpen(s.searchCount ?? 0);
+                                            setSkillHeatEdited(false);
                                             setIsSkillModalOpen(true);
                                             setOpenSkillMenuId(null);
                                           }}
@@ -2576,9 +2580,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <input
                   type="number"
                   value={editingSkill.searchCount ?? 500}
-                  onChange={(e) =>
-                    setEditingSkill({ ...editingSkill, searchCount: parseInt(e.target.value) || 0 })
-                  }
+                  onChange={(e) => {
+                    // 标记为已编辑：之后保存才把这个值回传，否则服务端会保留库中当前值
+                    setSkillHeatEdited(true);
+                    setEditingSkill({ ...editingSkill, searchCount: parseInt(e.target.value) || 0 });
+                  }}
                   className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
                 />
               </div>

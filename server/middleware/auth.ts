@@ -55,8 +55,11 @@ function readCookie(req: Request, name: string): string | undefined {
   return (req as any).cookies?.[name];
 }
 
-function setCsrfCookie(res: Response, name: string, token: string): void {
-  res.cookie(name, token, { ...COOKIE_BASE, httpOnly: false });
+// CSRF Cookie 的生命周期必须与会话 Cookie 保持一致。此前它不带 maxAge（会话级），
+// 而会话 Cookie 是持久的（管理员 8 小时 / 用户 30 天）——浏览器完整退出后 CSRF Cookie 消失、
+// 会话仍在，于是登出请求（同样受 CSRF 保护）必定 403，用户从界面上再也退不出来。
+function setCsrfCookie(res: Response, name: string, token: string, maxAge: number): void {
+  res.cookie(name, token, { ...COOKIE_BASE, httpOnly: false, maxAge });
 }
 
 function clearSessionCookies(res: Response, kind: 'user' | 'admin'): void {
@@ -80,7 +83,7 @@ export function createUserSession(req: Request, res: Response, userId: string): 
     userAgent: req.get('user-agent') || undefined,
   });
   res.cookie(USER_SESSION_COOKIE, token, { ...COOKIE_BASE, maxAge: USER_SESSION_TTL_MS });
-  setCsrfCookie(res, USER_CSRF_COOKIE, csrfToken);
+  setCsrfCookie(res, USER_CSRF_COOKIE, csrfToken, USER_SESSION_TTL_MS);
   return session;
 }
 
@@ -99,7 +102,7 @@ export function createAdminSession(req: Request, res: Response): AuthSessionReco
     userAgent: req.get('user-agent') || undefined,
   });
   res.cookie(ADMIN_SESSION_COOKIE, token, { ...COOKIE_BASE, maxAge: ADMIN_SESSION_TTL_MS });
-  setCsrfCookie(res, ADMIN_CSRF_COOKIE, csrfToken);
+  setCsrfCookie(res, ADMIN_CSRF_COOKIE, csrfToken, ADMIN_SESSION_TTL_MS);
   return session;
 }
 

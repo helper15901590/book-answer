@@ -18,6 +18,8 @@ export const SERVER_ERROR_KEYS: Record<string, TranslationKey> = {
   AI_UNAVAILABLE: 'server.AI_UNAVAILABLE',
   RATE_LIMITED: 'server.RATE_LIMITED',
   INTERNAL_ERROR: 'server.INTERNAL_ERROR',
+  CONFIRMATION_MISMATCH: 'server.CONFIRMATION_MISMATCH',
+  DELETE_FAILED: 'server.DELETE_FAILED',
 };
 
 // 把服务端响应转成当前语言的提示文案：
