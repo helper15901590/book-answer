@@ -8,6 +8,7 @@ import {
   clearUserSession,
   createUserSession,
   issueChallengeToken,
+  requireUser,
   sanitizeUser,
 } from '../middleware/auth.js';
 import { PASSWORD_CHANGE_COOKIE, CHALLENGE_TTL_MS, COOKIE_SECURE } from '../config.js';
@@ -22,6 +23,11 @@ const passwordChangeLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardH
 const loginSchema = z.object({ phone: z.string().trim().regex(/^\d{11}$/), password: z.string().min(1) });
 const passwordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(USER_PASSWORD_MIN_LENGTH).max(128) });
 const COOKIE_BASE = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const, path: '/' };
+
+// 注销账号的确认短语。三种界面语言各有一个、服务端全部接受——英文界面下要求用户输入
+// 中文短语说不通。必须与 src/i18n/locales/*.ts 的 workspace.deleteAccountPhrase 保持一致，
+// 改一处要同时改另一处；对大小写不敏感，避免英文用户因大小写差异反复失败。
+const DELETE_ACCOUNT_PHRASES = ['我确认注销', '我確認註銷', 'delete my account'];
 
 function genericLoginFailure(res: Response): void {
   res.status(401).json({ error: 'INVALID_CREDENTIALS', message: '账号或密码错误' });
@@ -86,6 +92,21 @@ export function registerAuthRoutes(app: Express): void {
     createUserSession(req, res, user.id);
     db.audit({ actorType: 'user', actorId: user.id, action: 'password_changed', ip: req.ip, userAgent: req.get('user-agent') || undefined });
     return res.json({ success: true, user: sanitizeUser({ ...user, mustChangePassword: false, password: undefined }) });
+  }));
+
+  // 用户自助注销。是**硬删除**：连带清空对话记录、登录会话、配额账本与改密凭证，不可恢复。
+  // 因此要求用户主动输入确认短语——这是不可逆操作，必须有明确的确认动作，不能只靠点按钮。
+  app.post('/api/auth/delete-account', requireUser, asyncJsonHandler<AuthRequest>(async (req, res) => {
+    const submitted = String(req.body?.confirm || '').trim().toLowerCase();
+    const accepted = DELETE_ACCOUNT_PHRASES.some((phrase) => phrase.toLowerCase() === submitted);
+    if (!accepted) return res.status(400).json({ error: 'CONFIRMATION_MISMATCH', message: '确认文本不匹配，请输入完整短语后重试' });
+
+    const userId = req.user!.id;
+    if (!db.deleteUser(userId)) return res.status(500).json({ error: 'DELETE_FAILED', message: '注销失败，请稍后重试或联系管理员' });
+    db.audit({ actorType: 'user', actorId: userId, action: 'account_deleted_by_self', ip: req.ip, userAgent: req.get('user-agent') || undefined });
+    // 该用户的 auth_sessions 已被 deleteUser 清掉，这里主要是把浏览器上的 Cookie 一起清干净
+    clearUserSession(req, res);
+    return res.json({ success: true });
   }));
 
   app.get('/api/auth/me', (req: AuthRequest, res) => {

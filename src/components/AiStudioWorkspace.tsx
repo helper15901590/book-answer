@@ -37,6 +37,7 @@ import {
   Clock,
   User,
   Crown,
+  UserX,
 } from 'lucide-react';
 
 interface AiStudioWorkspaceProps {
@@ -93,6 +94,9 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isMembershipModalOpen, setIsMembershipModalOpen] = useState(false);
+  const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [deletingSession, setDeletingSession] = useState<ChatSession | null>(null);
   const [toastInfo, setToastInfo] = useState<{ message: string; type?: 'info' | 'warning' | 'success' } | null>(null);
 
@@ -533,6 +537,32 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     setIsUserMenuOpen(false);
   };
 
+  // 注销账号：不可恢复的硬删除（账号、对话记录、配额账本一并清除）。
+  // 按钮在输入短语完全匹配前保持禁用，服务端还会再校验一次——客户端这道只是第一层门槛，
+  // 真正的防线在服务端，因为前端校验可以被绕过。
+  const handleDeleteAccount = async () => {
+    if (isDeletingAccount || deleteConfirmText.trim() !== t('workspace.deleteAccountPhrase')) return;
+    setIsDeletingAccount(true);
+    try {
+      const res = await apiFetch('/api/auth/delete-account', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: deleteConfirmText.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setIsDeletingAccount(false);
+        showToast(serverMessage(data, t, 'server.INTERNAL_ERROR'), 'warning');
+        return;
+      }
+      // 账号已经不存在了，整页重新加载回到未登录状态，避免残留任何用户态数据
+      window.location.reload();
+    } catch {
+      setIsDeletingAccount(false);
+      showToast(t('server.INTERNAL_ERROR'), 'warning');
+    }
+  };
+
   const checkQuotaAndCanProceed = (): boolean => {
     if (!user) { onOpenLogin(); return false; }
     if (user.role === 'admin' || user.isAdmin) return true;
@@ -929,6 +959,20 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         >
                           <LogOut className="w-3.5 h-3.5" />
                           退出登录
+                        </button>
+                        {/* 注销账号不可恢复，刻意做成不显眼的小符号避免误触；
+                            真正的确认放在点击后展开的弹窗里，要求输入完整短语 */}
+                        <button
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            setDeleteConfirmText('');
+                            setIsDeleteAccountOpen(true);
+                          }}
+                          title={t('workspace.deleteAccount')}
+                          aria-label={t('workspace.deleteAccount')}
+                          className="w-full flex items-center justify-center py-1 text-gray-400 hover:text-rose-500 transition-colors cursor-pointer"
+                        >
+                          <UserX className="w-3.5 h-3.5" />
                         </button>
                       </>
                     )}
@@ -1338,6 +1382,41 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           )}
         </main>
       </div>
+
+      {/* 注销账号确认弹窗：必须输入完整短语才能提交，避免误触造成的不可恢复删除 */}
+      {isDeleteAccountOpen && (
+        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-xl border border-gray-200 p-5 space-y-4 text-left">
+            <h3 className="text-sm font-serif font-bold text-rose-600">{t('workspace.deleteAccountTitle')}</h3>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {t('workspace.deleteAccountBody', { phrase: t('workspace.deleteAccountPhrase') })}
+            </p>
+            <input
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder={t('workspace.deleteAccountPhrase')}
+              autoComplete="off"
+              autoFocus
+              className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-rose-400"
+            />
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                onClick={() => setIsDeleteAccountOpen(false)}
+                className="px-3.5 py-1.5 rounded-xl text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors cursor-pointer"
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                onClick={handleDeleteAccount}
+                disabled={isDeletingAccount || deleteConfirmText.trim() !== t('workspace.deleteAccountPhrase')}
+                className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+              >
+                {t('workspace.deleteAccountConfirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete Confirmation Modal */}
       {deletingSession && (
