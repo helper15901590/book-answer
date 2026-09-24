@@ -1,11 +1,12 @@
+name: book-answer
 services:
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     restart: unless-stopped
-    # 根目录 .env 注入运行时变量（APP_ENCRYPTION_KEY、ADMIN_*、TRUST_PROXY 等）
-    env_file: ../.env
+    # 同目录 .env 注入运行时变量（APP_ENCRYPTION_KEY、ADMIN_*、TRUST_PROXY 等）
+    env_file: .env
     environment:
       NODE_ENV: production
       PORT: "3000"
@@ -33,8 +34,9 @@ services:
         max-file: "3"
     volumes:
       - ../data:/app/data
+    # 子路径部署：健康检查也要走前缀；默认值与 basePath.ts 保持一致
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000${BASE_PATH:-/bookanswer}/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

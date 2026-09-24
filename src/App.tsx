@@ -3,6 +3,7 @@ import { UserProfile, Skill, LLMConfig, AuthPolicy } from './types';
 import { DEFAULT_LLM_CONFIG } from './data/initialData';
 import { AiStudioWorkspace } from './components/AiStudioWorkspace';
 import { LoginModal } from './components/LoginModal';
+import { apiFetch } from './lib/apiFetch';
 
 const DEFAULT_AUTH_POLICY: AuthPolicy = { userMinLength: 6, adminMinLength: 16, registrationEnabled: false };
 
@@ -15,7 +16,7 @@ export default function App() {
 
   const refreshUserProfile = React.useCallback(async (): Promise<UserProfile | null> => {
     try {
-      const response = await fetch('/api/auth/me', { credentials: 'include' });
+      const response = await apiFetch('/api/auth/me');
       if (!response.ok) {
         setUser(null);
         return null;
@@ -34,7 +35,7 @@ export default function App() {
   // 后台改了额度后，用户端若只刷新用户对象，就会出现「等级已更新、额度仍是旧值」的错位。
   const refreshPublicConfig = React.useCallback(async (): Promise<void> => {
     try {
-      const response = await fetch('/api/config/public');
+      const response = await apiFetch('/api/config/public');
       const data = await response.json();
       if (data.llmConfig) setLlmConfig(data.llmConfig);
       if (data.authPolicy) setAuthPolicy(data.authPolicy);
@@ -46,7 +47,7 @@ export default function App() {
   React.useEffect(() => {
     void refreshUserProfile();
     void refreshPublicConfig();
-    fetch('/api/skills').then((response) => response.json()).then((data) => {
+    apiFetch('/api/skills').then((response) => response.json()).then((data) => {
       if (Array.isArray(data.skills) && data.skills.length) setSkills(data.skills);
     }).catch((error) => console.warn('同步技能失败:', error));
 

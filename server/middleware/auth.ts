@@ -9,6 +9,7 @@ import {
   ADMIN_PHONE,
   ADMIN_SECOND_PASSWORD,
   APP_ORIGIN,
+  BASE_PATH,
   COOKIE_SECURE,
   USER_CSRF_COOKIE,
   USER_SESSION_COOKIE,
@@ -190,7 +191,9 @@ export function csrfProtection(req: AuthRequest, res: Response, next: NextFuncti
   // 此前直接拿 req.path 比对导致豁免从未生效：未登录时靠"无会话即放行"侥幸通过，
   // 而浏览器仍持有管理员会话时，前台登录会带上该会话被要求 CSRF 令牌，前端报「安全令牌无效」。
   const routePath = `${req.baseUrl}${req.path}`;
-  const exempt = ['/api/auth/login', '/api/auth/change-password', '/api/admin/login'].some((path) => routePath === path) || routePath.startsWith('/api/admin/mfa/');
+  // BASE_PATH 挂载后 req.baseUrl 会带上前缀，豁免表必须用同一前缀拼出完整路径比对，
+  // 否则豁免全部失配，登录等未登录即可调用的端点会被误拦成 403。
+  const exempt = [`${BASE_PATH}/api/auth/login`, `${BASE_PATH}/api/auth/change-password`, `${BASE_PATH}/api/admin/login`].some((path) => routePath === path) || routePath.startsWith(`${BASE_PATH}/api/admin/mfa/`);
   if (exempt) {
     next();
     return;

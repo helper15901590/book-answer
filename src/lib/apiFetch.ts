@@ -8,9 +8,16 @@
 //     /Admin.html、/ADMIN.HTML、/admin.html/ 都会落到 app.get('*') 返回**用户端**页面。
 // 把后一组误判为后台，会让用户端页面去读管理员 CSRF Cookie（普通用户没有），
 // 于是该页所有写请求 403——包括登出。
+
+// 子路径部署前缀：构建期由 vite.config.ts 的 base（源头是仓库根 basePath.ts）注入。
+// 根路径部署时为 '/'，剥掉尾斜杠后是空串，下面的拼接全部退化为原样路径。
+const BASE = import.meta.env.BASE_URL.replace(/\/+$/, '');
+
 function isAdminPage(): boolean {
   const pathname = window.location.pathname;
-  return /^\/admin\/?$/i.test(pathname) || pathname === '/admin.html';
+  if (BASE && !pathname.startsWith(BASE)) return false;
+  const rest = pathname.slice(BASE.length);
+  return /^\/admin\/?$/i.test(rest) || rest === '/admin.html';
 }
 
 function readCookie(name: string): string {
@@ -30,12 +37,19 @@ export function authHeaders(extra?: Record<string, string>): Record<string, stri
   return headers;
 }
 
+// 子路径部署下接口不在站点根：调用方一律传 '/api/...' 根相对路径，前缀在这里统一补。
 export function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(input, {
+  return fetch(`${BASE}${input}`, {
     ...init,
     credentials: 'include',
     headers: authHeaders(init.headers as Record<string, string> | undefined),
   });
+}
+
+// 数据库存的图片路径是根相对形式（上传接口返回 /assets/xxx 并原样持久化），渲染时补子路径前缀；
+// 外链（https://...）与 data: 内联图不经过 BASE，原样透传。
+export function assetSrc(url: string): string {
+  return url.startsWith('/') ? `${BASE}${url}` : url;
 }
 
 // 登出请求的共同语义：apiFetch 对非 2xx 不抛异常，所以「是否真的登出成功」必须显式判断。

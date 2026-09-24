@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { UserProfile, Skill, LLMConfig } from '../types';
 import { DEFAULT_LLM_CONFIG } from '../data/initialData';
 import { AdminPanel } from './AdminPanel';
-import { tryLogout } from '../lib/apiFetch';
+import { apiFetch, tryLogout } from '../lib/apiFetch';
 
 type LoginStep = 'credentials' | 'mfa_setup' | 'mfa_verify';
 
@@ -22,7 +22,7 @@ export const AdminGate: React.FC = () => {
   const [skills, setSkills] = useState<Skill[]>([]);
 
   useEffect(() => {
-    fetch('/api/admin/me', { credentials: 'include' })
+    apiFetch('/api/admin/me')
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => { if (data?.user) setAdmin(data.user); })
       .catch(() => {})
@@ -32,11 +32,11 @@ export const AdminGate: React.FC = () => {
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault(); setError(''); setSubmitting(true);
     try {
-      const response = await fetch('/api/admin/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.trim(), password, secondPassword }) });
+      const response = await apiFetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.trim(), password, secondPassword }) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) return setError(data.message || '登录失败');
       if (data.mfaSetupRequired) {
-        const setupResponse = await fetch('/api/admin/mfa/setup', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
+        const setupResponse = await apiFetch('/api/admin/mfa/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
         const setup = await setupResponse.json().catch(() => ({}));
         if (!setupResponse.ok) return setError(setup.message || 'MFA 初始化失败');
         setSetupData(setup); setStep('mfa_setup'); return;
@@ -50,7 +50,7 @@ export const AdminGate: React.FC = () => {
   const handleSetupConfirm = async (event: React.FormEvent) => {
     event.preventDefault(); setError(''); setSubmitting(true);
     try {
-      const response = await fetch('/api/admin/mfa/confirm', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: otp.trim() }) });
+      const response = await apiFetch('/api/admin/mfa/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: otp.trim() }) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) return setError(data.message || '动态验证码错误');
       setAdmin(data.user);
@@ -61,7 +61,7 @@ export const AdminGate: React.FC = () => {
   const handleMfaVerify = async (event: React.FormEvent) => {
     event.preventDefault(); setError(''); setSubmitting(true);
     try {
-      const response = await fetch('/api/admin/mfa/verify', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: otp.trim(), recoveryCode: recoveryCode.trim() }) });
+      const response = await apiFetch('/api/admin/mfa/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: otp.trim(), recoveryCode: recoveryCode.trim() }) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) return setError(data.message || 'MFA 验证失败');
       setAdmin(data.user);
@@ -122,7 +122,8 @@ export const AdminGate: React.FC = () => {
       alert('退出登录失败，当前会话可能仍然有效。请重试；若反复失败，请清除本站点的 Cookie。');
       return;
     }
-    window.location.href = '/';
+    // BASE_URL 恒以 / 结尾（vite base 约定），直接作为站点内首页地址使用
+    window.location.href = import.meta.env.BASE_URL;
   };
 
   return <AdminPanel llmConfig={llmConfig} setLlmConfig={setLlmConfig} skills={skills} setSkills={setSkills} user={admin} setUser={setAdmin} onClose={handleAdminClose} />;

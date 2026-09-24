@@ -36,7 +36,7 @@ import {
   Sparkles,
   Loader2,
 } from 'lucide-react';
-import { apiFetch } from '../lib/apiFetch';
+import { apiFetch, assetSrc } from '../lib/apiFetch';
 
 interface AdminPanelProps {
   llmConfig: LLMConfig;
@@ -316,7 +316,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         apiFetch('/api/admin/skills').then(ensureAdminAuthorized).then((r) => r.json()),
         apiFetch('/api/admin/users').then(ensureAdminAuthorized).then((r) => r.json()),
         apiFetch('/api/admin/llm-config').then(ensureAdminAuthorized).then((r) => r.json()),
-        fetch('/api/tags').then((r) => r.json()),
+        apiFetch('/api/tags').then((r) => r.json()),
       ]);
 
       if (resStats.stats) setStats(resStats.stats);
@@ -2631,7 +2631,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 {editingSkill.coverUrl ? (
                   <div className="flex items-center gap-3 p-2.5 bg-slate-50/60 border border-slate-200/80 rounded-lg">
                     <img
-                      src={editingSkill.coverUrl}
+                      src={assetSrc(editingSkill.coverUrl)}
                       alt="封面预览"
                       className="w-12 h-16 object-cover rounded border border-slate-200 bg-slate-100 shrink-0"
                     />

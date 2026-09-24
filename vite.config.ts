@@ -2,9 +2,12 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+import {BASE_PATH} from './basePath';
 
 export default defineConfig(() => {
   return {
+    // 子路径部署：页面与全部构建产物挂在前缀下；源头是仓库根 basePath.ts，改那里即可
+    base: `${BASE_PATH}/`,
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

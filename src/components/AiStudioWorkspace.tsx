@@ -126,7 +126,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     cancelOngoingGeneration();
 
     if (user) {
-      fetch('/api/chat/sessions', { credentials: 'include' })
+      apiFetch('/api/chat/sessions')
         .then((res) => (res.ok ? res.json() : { sessions: [] }))
         .then((data) => {
           if (Array.isArray(data.sessions)) {
@@ -195,7 +195,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   const [dbTags, setDbTags] = useState<string[]>([]);
 
   useEffect(() => {
-    fetch('/api/tags')
+    apiFetch('/api/tags')
       .then((r) => r.json())
       .then((d) => {
         if (d && Array.isArray(d.tags) && d.tags.length > 0) {

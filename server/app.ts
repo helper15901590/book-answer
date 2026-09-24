@@ -6,7 +6,7 @@ import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
 import * as Sentry from '@sentry/node';
 import { createServer as createViteServer } from 'vite';
-import { IS_PROD, IS_TEST, DATA_DIR, TRUST_PROXY, ALLOW_INSECURE_HTTP } from './config.js';
+import { IS_PROD, IS_TEST, DATA_DIR, TRUST_PROXY, ALLOW_INSECURE_HTTP, BASE_PATH } from './config.js';
 import { db } from './db.js';
 import { authMiddleware, csrfProtection } from './middleware/auth.js';
 import { metrics } from './services/metrics.js';
@@ -90,13 +90,22 @@ export async function createApp() {
     // 测试只验证 API，不挂载 Vite 前端中间件
   } else if (!IS_PROD) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
-    app.get('/admin', (_req, res) => res.redirect('/admin.html'));
+    app.get('/admin', (_req, res) => res.redirect(`${BASE_PATH}/admin.html`));
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('/admin', (_req, res) => res.sendFile(path.join(distPath, 'admin.html')));
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+  }
+
+  // 子路径部署：BASE_PATH 非空时把整个应用挂到前缀之下（如 /bookanswer/...）。
+  // 挂载后路由与中间件看到的 req.url 已剥离前缀，现有逻辑无需感知前缀——
+  // 唯一例外是 CSRF 豁免表按 baseUrl+path 比对，已在 middleware/auth.ts 对齐。
+  if (BASE_PATH) {
+    const root = express();
+    root.use(BASE_PATH, app);
+    return root;
   }
 
   return app;

@@ -2,6 +2,7 @@ import React from 'react';
 import { MessageSquare, Flame } from 'lucide-react';
 import { Skill, UserProfile, cleanBookTitle, ALL_CATEGORIES } from '../types';
 import { useI18n, formatCompactCount } from '../i18n';
+import { assetSrc } from '../lib/apiFetch';
 
 interface SkillCardProps {
   skill: Skill;
@@ -89,7 +90,7 @@ export const SkillCard: React.FC<SkillCardProps> = ({
         {/* Cover Image */}
         <div className="w-20 h-28 rounded-xl overflow-hidden bg-gray-100 shrink-0 shadow-xs group-hover:scale-[1.02] transition-transform duration-200 relative border border-gray-200/80">
           <img
-            src={skill.coverUrl}
+            src={assetSrc(skill.coverUrl)}
             alt={skill.title}
             className="w-full h-full object-cover"
           />

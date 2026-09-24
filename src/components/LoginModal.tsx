@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY } from '../data/initialData';
 import { evaluatePasswordStrength } from '../lib/passwordStrength';
 import { useI18n, serverMessage } from '../i18n';
+import { apiFetch } from '../lib/apiFetch';
 
 interface LoginModalProps {
   onSuccess: (user: UserProfile) => void;
@@ -40,7 +41,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose, reas
     if (!agreed) return setErrorMsg(t('login.errAgreement'));
     setIsSubmitting(true); setErrorMsg('');
     try {
-      const response = await fetch('/api/auth/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.trim(), password }) });
+      const response = await apiFetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone.trim(), password }) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) return setErrorMsg(serverMessage(data, t, 'login.errLoginFailed'));
       if (data.passwordChangeRequired) { setStep('change_password'); return; }
@@ -55,7 +56,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess, onClose, reas
     if (newPassword !== confirmPassword) return setErrorMsg(t('login.errPasswordMismatch'));
     setIsSubmitting(true); setErrorMsg('');
     try {
-      const response = await fetch('/api/auth/change-password', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: password, newPassword }) });
+      const response = await apiFetch('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: password, newPassword }) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) return setErrorMsg(serverMessage(data, t, 'login.errChangePasswordFailed'));
       if (data.user) onSuccess(data.user);

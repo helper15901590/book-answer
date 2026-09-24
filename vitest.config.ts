@@ -18,6 +18,8 @@ export default defineConfig({
       ADMIN_MFA_ENABLED: '1',
       ADMIN_SECOND_PASSWORD: '',
       DATA_DIR: './.test-runtime',
+      // 现有测试全部按根路径挂载访问（supertest 直连 /api/...）；子路径场景由 subpath.test.ts 自行 stub
+      BASE_PATH: '',
     },
   },
 });

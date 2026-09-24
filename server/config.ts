@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import path from 'path';
+import { BASE_PATH as BASE_PATH_DEFAULT } from '../basePath.js';
 import { ADMIN_PASSWORD_MIN_LENGTH, validateStrongPassword } from './services/password.js';
 
 dotenv.config({ path: ['.env.local', '.env'] });
@@ -10,6 +11,18 @@ export const IS_PROD = env === 'production';
 export const IS_TEST = env === 'test';
 export const PORT = Number(process.env.PORT) || 3000;
 export const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+
+// 子路径部署前缀：默认取仓库根 basePath.ts（与 vite 构建期 base 同源，两端永不漂移）。
+// 环境变量仅作覆盖口，供测试按根路径挂载注入 ''；生产不需要也不应设置。
+export const BASE_PATH = (() => {
+  const raw = (process.env.BASE_PATH ?? BASE_PATH_DEFAULT).trim().replace(/\/+$/, '');
+  if (raw === '') return '';
+  if (raw === '/' || !/^\/[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*$/.test(raw)) {
+    console.error(`FATAL: BASE_PATH 必须为空或形如 /bookanswer 的路径段，当前为 ${raw}`);
+    process.exit(1);
+  }
+  return raw;
+})();
 
 export const APP_ORIGIN = (() => {
   const raw = (process.env.APP_ORIGIN || '').trim().replace(/\/+$/, '');
