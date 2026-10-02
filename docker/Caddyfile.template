@@ -1,0 +1,16 @@
+# 备案完成后：复制为 docker/Caddyfile，替换域名，执行
+#   docker compose --profile https up -d
+# 前置要求：.env 中必须设置 TRUST_PROXY=1
+你的域名.com {
+    encode zstd gzip
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        X-Frame-Options "DENY"
+    }
+    reverse_proxy app:3000 {
+        flush_interval -1
+        header_up X-Real-IP {remote_host}
+    }
+}

@@ -1,0 +1,28 @@
+name: CI
+
+# 每次推送到主分支、或发起合并请求时，自动做类型检查与测试。
+# 目的：坏代码在推上来就能看见，而不是等到部署到服务器才发现。
+on:
+  push:
+    branches: [main, feat/cloud-production]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查（含多语言字典完整性）
+        run: npm run lint
+
+      - name: 运行测试
+        run: npm test

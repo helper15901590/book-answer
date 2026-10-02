@@ -1,8 +1,0 @@
-{
-  "name": "Remix Remix 0.991",
-  "description": "经典著作AI思想蒸馏生产级平台，已彻底清除模拟数据并调整生产架构",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}

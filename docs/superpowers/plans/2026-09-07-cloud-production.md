@@ -78,7 +78,7 @@
 **Files:**
 - Create: `server/config.ts`、`server/index.ts`
 - Modify: `package.json`（scripts.dev / scripts.build）
-- Delete: 暂不删 `server.ts`（Task 6 末尾删除；本任务起它不再是入口）
+- Move: `server.ts` → `server/index.ts`（git mv；根目录不再保留 server.ts）
 
 **Interfaces:**
 - Produces: `server/config.ts` 导出 `PORT: number`、`IS_PROD: boolean`；`server/index.ts` 为唯一后端入口（`startServer(): Promise<void>` 自执行）。
@@ -235,7 +235,7 @@ import { generateDeepBookDistillation } from './services/llm/offline.js';
 import { generateRecommendedQuestionsFromLLM } from './services/llm/questions.js';
 ```
 
-删除 index.ts 中不再使用的 `GoogleGenAI` 导入。
+删除 index.ts 中不再使用的导入（注意：`GoogleGenAI` 仍被 index.ts 的 llm-test 路由使用，**保留**；仅当 grep 证实无引用才删）。
 
 - [ ] **Step 3: 验证**：`npm run lint` + dev 启动 + 冒烟：
 
