@@ -7,7 +7,7 @@ import { AuthRequest, requireUser, sanitizeUser } from '../middleware/auth.js';
 import { metrics } from '../services/metrics.js';
 import { reserveQuota, settleQuota } from '../services/quota.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl, sanitizeMessagesForLLM } from '../services/llm/sanitize.js';
-import { ChatMessage, ChatSession, PublicChatSession, cleanBookTitle } from '../../src/types.js';
+import { ChatMessage, ChatSession, PublicChatSession, Skill, cleanBookTitle } from '../../src/types.js';
 
 const chatLimiter = rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '请求过于频繁，请稍后再试' } });
 const MAX_MESSAGE_LENGTH = 4000;
@@ -71,6 +71,19 @@ function sessionErrorResponse(res: Response, error: 'SESSION_CONFLICT' | 'SKILL_
     : res.status(404).json({ error: 'Skill not found' });
 }
 
+// 新会话欢迎语按技能类型区分。可靠内容与书籍一样使用书名号 + 作者，
+// 只是自称不同，让用户在对话里能分辨当前技能来自哪个广场。
+function buildWelcomeMessage(skill: Skill): string {
+  const tags = (skill.tags || []).join('、');
+  if (skill.skillType === 'mentor') {
+    return `你好！我是【${skill.author}】AI思想导师。\n我已将其核心思想、决策智慧（${tags}）融会贯通。\n你可以提出你当前在商业、投资、工作或生活中的具体困惑，我将以导师思维为你提供深度答疑与决策剖析。`;
+  }
+  if (skill.skillType === 'reliable') {
+    return `你好！我是《${cleanBookTitle(skill.title)}》作者【${skill.author}】的AI可靠知识蒸馏体。\n我已将其中经过校验的核心内容、方法框架（${tags}）融会贯通。\n你可以提出你当前在商业、投资、工作或生活中的具体困惑，我将以可靠内容中的方法为你提供深度答疑与决策剖析。`;
+  }
+  return `你好！我是《${cleanBookTitle(skill.title)}》作者【${skill.author}】的AI思想蒸馏体。\n我已将本书的核心理论、决策模型（${tags}）融会贯通。\n你可以提出你当前在商业、投资、工作或生活中的具体困惑，我将以原著思维模型为你提供深度答疑与决策剖析。`;
+}
+
 export function registerChatRoutes(app: Express): void {
   app.get('/api/chat/sessions', requireUser, (req: AuthRequest, res) => {
     const sessions = db.getChatSessions(req.user!.id).map((session) => sessionView(session)!);
@@ -93,9 +106,7 @@ export function registerChatRoutes(app: Express): void {
       messages: [{
         id: `msg-${crypto.randomUUID()}`,
         role: 'assistant' as const,
-        content: (skill.skillType === 'mentor')
-          ? `你好！我是【${skill.author}】AI思想导师。\n我已将其核心思想、决策智慧（${(skill.tags || []).join('、')}）融会贯通。\n你可以提出你当前在商业、投资、工作或生活中的具体困惑，我将以导师思维为你提供深度答疑与决策剖析。`
-          : `你好！我是《${cleanBookTitle(skill.title)}》作者【${skill.author}】的AI思想蒸馏体。\n我已将本书的核心理论、决策模型（${(skill.tags || []).join('、')}）融会贯通。\n你可以提出你当前在商业、投资、工作或生活中的具体困惑，我将以原著思维模型为你提供深度答疑与决策剖析。`,
+        content: buildWelcomeMessage(skill),
         timestamp: new Date().toISOString(),
         recommendedQuestions: skill.sampleQuestions?.length ? skill.sampleQuestions : undefined,
       }],

@@ -2,31 +2,29 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import fs from 'fs';
 import path from 'path';
-import { Express, Response } from 'express';
+import { Express } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { db, getTodayString, MAX_TAGS } from '../db.js';
-import { ADMIN_PASSWORD, ADMIN_PHONE, ADMIN_CHALLENGE_COOKIE, ADMIN_MFA_ENABLED, ADMIN_SECOND_PASSWORD, CHALLENGE_TTL_MS, COOKIE_SECURE, DATA_DIR } from '../config.js';
+import { ADMIN_PASSWORD, ADMIN_PHONE, DATA_DIR } from '../config.js';
 import { metrics, onlineUsers } from '../services/metrics.js';
 import {
   AuthRequest,
   buildAdminProfile,
   clearAdminSession,
   createAdminSession,
-  getAdminAuthVersion,
-  issueChallengeToken,
   requireAdmin,
   sanitizeUser,
 } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
-import { ADMIN_PASSWORD_MIN_LENGTH, BCRYPT_ROUNDS, generateTemporaryPassword, validateStrongPassword } from '../services/password.js';
+import { BCRYPT_ROUNDS, generateTemporaryPassword } from '../services/password.js';
 import { asyncJsonHandler } from '../middleware/asyncHandler.js';
-import { decryptSecret, encryptSecret, generateRecoveryCodes, generateTotpSetup, generateUserId, hmac, randomToken, safeEqual, sha256, verifyTotp } from '../services/security.js';
-import { MembershipTier, UserProfile, cleanBookTitle, AdminSecurityRecord, membershipExpiryFromNow, tierDailyLimit } from '../../src/types.js';
+import { generateUserId, randomToken } from '../services/security.js';
+import { MembershipTier, UserProfile, cleanBookTitle, isSkillType, membershipExpiryFromNow, tierDailyLimit } from '../../src/types.js';
+import { toPublicSkill } from './skills.js';
 
 const adminLoginLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: '尝试过于频繁，请稍后再试' } });
 const adminActionLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false });
-const challengeCookieBase = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const, path: '/' };
 const loginFailures = new Map<string, { count: number; lockedUntil: number; lastSeen: number }>();
 
 // 失败计数若不清理会随攻击流量无界增长；15 分钟无活动的条目视为过期
@@ -41,20 +39,6 @@ function validAdminCredentials(phone: string, password: string): boolean {
   return phone === ADMIN_PHONE && password === ADMIN_PASSWORD;
 }
 
-function issueAdminChallenge(req: AuthRequest, res: Response, type: 'admin_mfa_setup' | 'admin_mfa_verify'): void {
-  const challenge = issueChallengeToken();
-  db.createAuthChallenge({ tokenHash: challenge.tokenHash, type, subjectId: 'admin', expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS).toISOString() });
-  res.cookie(ADMIN_CHALLENGE_COOKIE, challenge.token, { ...challengeCookieBase, maxAge: CHALLENGE_TTL_MS });
-}
-
-function resolveChallenge(req: AuthRequest, type: string) {
-  const token = req.cookies?.[ADMIN_CHALLENGE_COOKIE] as string | undefined;
-  if (!token) return null;
-  const challenge = db.getAuthChallengeByTokenHash(sha256(token), type);
-  if (!challenge || challenge.usedAt || new Date(challenge.expiresAt).getTime() <= Date.now()) return null;
-  return challenge;
-}
-
 function maskPhone(phone?: string): string {
   if (!phone || phone.length < 7) return phone || '';
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
@@ -64,101 +48,17 @@ export function registerAdminRoutes(app: Express): void {
   app.post('/api/admin/login', adminLoginLimiter, (req, res) => {
     const phone = String(req.body?.phone || '').trim();
     const password = String(req.body?.password || req.body?.code || '');
-    const secondPassword = String(req.body?.secondPassword || '');
     const key = `${req.ip}:${phone}`;
     const failure = loginFailures.get(key);
     if (failure && failure.lockedUntil > Date.now()) return res.status(423).json({ error: 'ACCOUNT_LOCKED', message: '登录尝试过多，请 15 分钟后重试' });
-    // 安全码与密码合并判定：失败提示统一，不暴露是哪一重出错
-    const secondOk = !ADMIN_SECOND_PASSWORD || safeEqual(sha256(secondPassword), sha256(ADMIN_SECOND_PASSWORD));
-    if (!validAdminCredentials(phone, password) || !secondOk) {
+    if (!validAdminCredentials(phone, password)) {
       const next = { count: (failure?.count || 0) + 1, lockedUntil: 0, lastSeen: Date.now() };
       if (next.count >= 5) next.lockedUntil = Date.now() + 15 * 60 * 1000;
       loginFailures.set(key, next);
       return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: '账号或密码错误' });
     }
     loginFailures.delete(key);
-    // 关闭动态验证码时直接建立管理员会话（仅内测受控环境使用，见 config.ADMIN_MFA_ENABLED）
-    if (!ADMIN_MFA_ENABLED) {
-      createAdminSession(req as AuthRequest, res);
-      db.audit({ actorType: 'admin', actorId: 'admin', action: 'admin_login_success', metadata: { mfa: 'disabled' }, ip: req.ip, userAgent: req.get('user-agent') || undefined });
-      return res.json({ success: true, user: sanitizeUser(buildAdminProfile()) });
-    }
-    const security = db.getAdminSecurity();
-    if (!security?.totpEnabled || !security.totpSecretEnc) {
-      issueAdminChallenge(req as AuthRequest, res, 'admin_mfa_setup');
-      return res.json({ mfaSetupRequired: true });
-    }
-    issueAdminChallenge(req as AuthRequest, res, 'admin_mfa_verify');
-    return res.json({ mfaRequired: true });
-  });
-
-  app.post('/api/admin/mfa/setup', adminLoginLimiter, (req: AuthRequest, res) => {
-    const challenge = resolveChallenge(req, 'admin_mfa_setup');
-    if (!challenge) return res.status(401).json({ error: 'CHALLENGE_EXPIRED', message: 'MFA 设置会话已过期，请重新登录' });
-    const setup = generateTotpSetup(ADMIN_PHONE || 'admin');
-    const recoveryCodes = generateRecoveryCodes(8);
-    const current = db.getAdminSecurity();
-    db.saveAdminSecurity({
-      id: 'primary',
-      totpSecretEnc: current?.totpSecretEnc,
-      totpEnabled: false,
-      recoveryCodeHashes: current?.recoveryCodeHashes || [],
-      pendingSecretEnc: encryptSecret(setup.secret),
-      pendingRecoveryHashes: recoveryCodes.map((code) => hmac(code)),
-      authVersion: current?.authVersion,
-      updatedAt: new Date().toISOString(),
-    });
-    return res.json({ secret: setup.secret, otpauthUri: setup.otpauthUri, recoveryCodes });
-  });
-
-  app.post('/api/admin/mfa/confirm', adminLoginLimiter, (req: AuthRequest, res) => {
-    const challenge = resolveChallenge(req, 'admin_mfa_setup');
-    if (!challenge) return res.status(401).json({ error: 'CHALLENGE_EXPIRED', message: 'MFA 设置会话已过期，请重新登录' });
-    const security = db.getAdminSecurity();
-    if (!security?.pendingSecretEnc) return res.status(400).json({ error: 'MFA_NOT_READY', message: '请先生成 MFA 密钥' });
-    const secret = decryptSecret(security.pendingSecretEnc);
-    if (!verifyTotp(secret, String(req.body?.code || ''))) return res.status(400).json({ error: 'INVALID_TOTP', message: '动态验证码错误' });
-    const activated: AdminSecurityRecord = {
-      ...security,
-      totpSecretEnc: security.pendingSecretEnc,
-      totpEnabled: true,
-      recoveryCodeHashes: security.pendingRecoveryHashes,
-      pendingSecretEnc: undefined,
-      pendingRecoveryHashes: [],
-      authVersion: getAdminAuthVersion(),
-      updatedAt: new Date().toISOString(),
-    };
-    db.saveAdminSecurity(activated);
-    db.revokeAdminSessions();
-    db.markAuthChallengeUsed(challenge.id);
-    res.clearCookie(ADMIN_CHALLENGE_COOKIE, challengeCookieBase);
-    createAdminSession(req, res);
-    db.audit({ actorType: 'admin', actorId: 'admin', action: 'admin_mfa_enabled', ip: req.ip, userAgent: req.get('user-agent') || undefined });
-    return res.json({ success: true, user: sanitizeUser(buildAdminProfile()) });
-  });
-
-  app.post('/api/admin/mfa/verify', adminLoginLimiter, (req: AuthRequest, res) => {
-    const challenge = resolveChallenge(req, 'admin_mfa_verify');
-    if (!challenge) return res.status(401).json({ error: 'CHALLENGE_EXPIRED', message: 'MFA 验证会话已过期，请重新登录' });
-    const security = db.getAdminSecurity();
-    if (!security?.totpSecretEnc) return res.status(400).json({ error: 'MFA_NOT_CONFIGURED', message: '管理员 MFA 尚未配置' });
-    const code = String(req.body?.code || '').trim();
-    const recoveryCode = String(req.body?.recoveryCode || '').trim();
-    let accepted = verifyTotp(decryptSecret(security.totpSecretEnc), code);
-    if (!accepted && recoveryCode) {
-      const hash = hmac(recoveryCode);
-      const index = security.recoveryCodeHashes.indexOf(hash);
-      if (index >= 0) {
-        security.recoveryCodeHashes.splice(index, 1);
-        security.updatedAt = new Date().toISOString();
-        db.saveAdminSecurity(security);
-        accepted = true;
-      }
-    }
-    if (!accepted) return res.status(401).json({ error: 'INVALID_MFA', message: '动态验证码或恢复码错误' });
-    db.markAuthChallengeUsed(challenge.id);
-    res.clearCookie(ADMIN_CHALLENGE_COOKIE, challengeCookieBase);
-    createAdminSession(req, res);
+    createAdminSession(req as AuthRequest, res);
     db.audit({ actorType: 'admin', actorId: 'admin', action: 'admin_login_success', ip: req.ip, userAgent: req.get('user-agent') || undefined });
     return res.json({ success: true, user: sanitizeUser(buildAdminProfile()) });
   });
@@ -191,8 +91,18 @@ export function registerAdminRoutes(app: Express): void {
   });
 
   app.get('/api/admin/users', requireAdmin, (_req, res) => {
-    const users = db.getUsers().map((user) => sanitizeUser(user));
+    // 关注数一次 GROUP BY 取回，避免为每个用户单独查询（N+1）。
+    const followCounts = db.getUserFollowCounts();
+    const users = db.getUsers().map((user) => ({ ...sanitizeUser(user), followCount: followCounts.get(user.id) || 0 }));
     res.json({ users });
+  });
+
+  // 后台查看单个用户的关注列表：只读，不提供代关注/代取关。
+  app.get('/api/admin/users/:userId/follows', requireAdmin, (req: AuthRequest, res) => {
+    const user = db.getUserById(req.params.userId);
+    if (!user) return res.status(404).json({ error: 'NOT_FOUND', message: '用户不存在' });
+    const follows = db.getUserFollows(user.id).map(({ skill, followedAt }) => ({ ...toPublicSkill(skill), followedAt }));
+    return res.json({ follows });
   });
 
   app.post('/api/admin/users/create', requireAdmin, asyncJsonHandler<AuthRequest>(async (req, res) => {
@@ -373,7 +283,7 @@ export function registerAdminRoutes(app: Express): void {
       // 热度由管理员设定初始值、服务端再随浏览自增。字段缺省表示管理员没改动这个输入框，
       // 必须沿用库中当前值，否则一次只改描述的保存会把弹窗打开期间累积的浏览增量抹掉。
       searchCount: input.searchCount === undefined ? (existing?.searchCount ?? 0) : Number(input.searchCount) || 0,
-      skillType: input.skillType === 'mentor' ? 'mentor' as const : 'book' as const,
+      skillType: isSkillType(input.skillType) ? input.skillType : 'book',
     };
     res.json({ success: true, skill: db.saveSkill(skill) });
   });

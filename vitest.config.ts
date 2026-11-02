@@ -13,10 +13,6 @@ export default defineConfig({
       APP_ENCRYPTION_KEY: 'MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=',
       ADMIN_PHONE: '13800000000',
       ADMIN_PASSWORD: 'AdminPass12345678!',
-      // 固定管理员登录方式：测试用例覆盖的是动态验证码链路，
-      // 不固定则会被开发机 .env 里的开关影响，导致本地能过、CI 挂掉（或反之）
-      ADMIN_MFA_ENABLED: '1',
-      ADMIN_SECOND_PASSWORD: '',
       DATA_DIR: './.test-runtime',
       // 现有测试全部按根路径挂载访问（supertest 直连 /api/...）；子路径场景由 subpath.test.ts 自行 stub
       BASE_PATH: '',

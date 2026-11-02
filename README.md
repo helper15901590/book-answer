@@ -4,12 +4,13 @@
 
 ## 功能特性
 
-- **书籍广场 / 导师广场**：分类、搜索、热度排行、详情页，20 张/批分页加载
+- **书籍广场 / 导师广场 / 可靠广场**：分类、搜索、热度排行、详情页，20 张/批分页加载
+- **关注列表**：登录后可关注任意技能卡片，关注关系服务端持久化，集中查看已关注内容
 - **AI 对话**：SSE 流式输出、按书隔离的会话历史、基于原著内容的推荐追问（由大模型从 skill.md 提炼）
 - **会员与配额**：普通 / 月度 / 季度 / 年度四档，免费按日、付费按自然月重置；上游失败自动退还配额
 - **管理后台**（`/admin`）：仪表盘统计、导师书籍管理、标签管理、用户生命周期、会员开通、模型配置与连通性测试、协议配置
 - **多语言**：简体中文 / 繁体中文 / 英语，顶栏切换
-- **安全**：服务端会话 + HttpOnly Cookie + CSRF 双提交、管理员 TOTP + 恢复码、API Key AES-256-GCM 加密存储、登录限流与锁定、审计日志
+- **安全**：服务端会话 + HttpOnly Cookie + CSRF 双提交、管理员账号密码登录、API Key AES-256-GCM 加密存储、登录限流与锁定、审计日志
 
 ## 技术栈
 
@@ -47,7 +48,7 @@ npm run dev
 
 > 整个应用默认挂载在 `/bookanswer` 子路径下（子路径部署，前缀唯一配置点在仓库根 [basePath.ts](basePath.ts)，同时作用于 Vite 构建与运行时挂载）。改该文件后重启 `npm run dev` 即换前缀；置空则回落到根路径。
 
-首次进入后台：输入 `ADMIN_PHONE` / `ADMIN_PASSWORD`，按提示绑定 TOTP 并保存一次性恢复码。LLM API Key 可在后台「模型配置」填写，也可通过 `DEEPSEEK_API_KEY` 等环境变量提供。
+首次进入后台：输入 `ADMIN_PHONE` / `ADMIN_PASSWORD` 即可登录。LLM API Key 可在后台「模型配置」填写，也可通过 `DEEPSEEK_API_KEY` 等环境变量提供。
 
 ## 常用命令
 
@@ -55,12 +56,11 @@ npm run dev
 |------|------|
 | `npm run dev` | 开发模式（Vite HMR + Express API） |
 | `npm run lint` | 类型检查（含多语言字典完整性） |
-| `npm test` | 集成测试（认证、越权、MFA、强制改密、子路径、i18n） |
+| `npm test` | 集成测试（认证、越权、强制改密、子路径、i18n） |
 | `npm run build` | 构建前端 + 打包服务端 |
 | `npm run verify` | lint + test + build + 生产依赖审计 + 配置检查 |
 | `npm run config:check` | 环境变量与数据库健康自检 |
 | `npm run db:reset-accounts` | 清空账号数据（需 `CONFIRM_ACCOUNT_RESET=RESET_ACCOUNTS`） |
-| `npm run admin:mfa-reset` | 重置管理员 MFA（需 `CONFIRM_ADMIN_MFA_RESET=RESET_MFA`） |
 | `npm run agreements:sync` | 用代码中的协议正文覆盖数据库版本（需 `CONFIRM_AGREEMENT_SYNC=SYNC`） |
 | `npm run load:test` | autocannon 容量测试 |
 
@@ -71,8 +71,8 @@ npm run dev
 | `server/app.ts` | Express 应用装配（安全中间件顺序、路由、静态资源、子路径挂载） |
 | `server/db.ts` | SQLite schema、迁移与自检、账号 / 会话 / 配额 / 统计 |
 | `server/middleware/auth.ts` | 会话解析、CSRF、用户 / 管理员鉴权 |
-| `server/routes/` | auth（登录、强制改密、注销）、skills、chat（会话 + SSE）、admin、config |
-| `server/services/` | 安全（AES-GCM / TOTP）、配额、LLM 调用、日志、指标 |
+| `server/routes/` | auth（登录、强制改密、注销）、skills、follows（关注）、chat（会话 + SSE）、admin、config |
+| `server/services/` | 安全（AES-GCM / 随机令牌）、配额、LLM 调用、日志、指标 |
 | `src/components/AiStudioWorkspace.tsx` | 用户端：市场与聊天工作区 |
 | `src/components/AdminGate.tsx` / `AdminPanel.tsx` | 管理后台：登录门控与面板 |
 | `src/i18n/` | 多语言字典、取值、服务端错误码翻译 |
@@ -90,6 +90,6 @@ npm run dev
 
 ## 部署与运维
 
-生产部署（Docker Compose + Caddy HTTPS + restic 异地备份）、管理员 MFA 操作与备份恢复见 [docs/deploy.md](docs/deploy.md)。
+生产部署（Docker Compose + Caddy HTTPS + restic 异地备份）、管理员登录与备份恢复见 [docs/deploy.md](docs/deploy.md)。
 
 当前边界：单实例部署（SQLite 同步写，不支持多副本）；不包含在线支付；会员由管理员手工开通。更多细节见 [docs/ONBOARDING.md](docs/ONBOARDING.md)（架构与数据模型）与 [docs/FULLSTACK_BEGINNER_GUIDE.md](docs/FULLSTACK_BEGINNER_GUIDE.md)（零基础全栈教材）。

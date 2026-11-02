@@ -9,7 +9,7 @@
 - 前端：React 19 + TypeScript 5.8 + Vite 6 + Tailwind CSS 4
 - 后端：Express 4，`server/app.ts` 提供可测试应用工厂
 - 数据库：better-sqlite3，WAL，版本化迁移，账号数据可重置
-- 认证：服务端随机会话 + HttpOnly Cookie + CSRF 双提交；用户强密码，管理员 TOTP + 恢复码
+- 认证：服务端随机会话 + HttpOnly Cookie + CSRF 双提交；用户强密码，管理员账号密码登录
 - 密钥：LLM API Key 使用 `APP_ENCRYPTION_KEY` 做 AES-256-GCM 加密
 - 日志：Pino 结构化日志 + 可选 Sentry
 - 部署：单实例 Docker Compose + Caddy HTTPS + restic 异地备份
@@ -22,7 +22,6 @@
 - 完整验证：`npm run verify`
 - 配置检查：`npm run config:check`
 - 清空账号：`CONFIRM_ACCOUNT_RESET=RESET_ACCOUNTS npm run db:reset-accounts`
-- 重置管理员 MFA：`CONFIRM_ADMIN_MFA_RESET=RESET_MFA npm run admin:mfa-reset`
 - 容量测试：`BASE_URL=https://域名/api/health CONNECTIONS=50 DURATION=30 npm run load:test`
 
 ## 环境变量
@@ -37,12 +36,13 @@
 | `server/middleware/auth.ts` | Cookie 会话解析、CSRF、用户/管理员鉴权 |
 | `server/routes/auth.ts` | 登录、强制改密 |
 | `server/routes/chat.ts` | 登录后才能访问的会话与 SSE 对话 |
-| `server/routes/admin.ts` | 管理员 MFA、用户生命周期、技能、配置和统计 |
-| `server/services/security.ts` | AES-GCM、随机令牌、TOTP、恢复码 |
-| `src/components/AiStudioWorkspace.tsx` | 公开市场与登录后聊天工作区 |
-| `src/components/AdminGate.tsx` | 管理员密码 + TOTP 登录门控 |
+| `server/routes/follows.ts` | 登录后的技能关注与关注列表 |
+| `server/routes/admin.ts` | 管理员登录、用户生命周期、技能、配置和统计 |
+| `server/services/security.ts` | AES-GCM、随机令牌、用户 ID |
+| `src/components/AiStudioWorkspace.tsx` | 公开广场（书籍 / 导师 / 可靠）、关注列表与登录后聊天工作区 |
+| `src/components/AdminGate.tsx` | 管理员账号密码登录门控 |
 | `src/components/AdminPanel.tsx` | 后台管理面板 |
-| `tests/api.test.ts` | 认证、越权、MFA、强制改密集成测试 |
+| `tests/api.test.ts` | 认证、越权、强制改密集成测试 |
 | `src/i18n/` | 用户端多语言：基准字典、取值与语言切换（见下方约定） |
 
 ## 约定
@@ -54,6 +54,7 @@
 - 会员到期时间有两种口径，不可混用：**后台配置等级**（建号、编辑用户）一律以当前时间为基准重新起算；**升级/续费**（`/api/admin/users/upgrade-tier`）在原有效期上顺延，不吞掉用户已付费的剩余时长。
 - 会员**不支持主动降级**：低于当前档位的卡片只显示「已包含」，不提供任何降级入口。购买动作由 `membershipActionFor()` 统一判定（开通 / 续费 / 升级 / 已包含）。
 - LLM 上游失败必须退还预留配额；API Key 永不返回前端明文。
+- 关注关系存服务端 `user_follows`，随用户或技能删除级联清理；关注列表同样只返回 `PublicSkill` 字段。
 - 运行数据、`.env`、SQLite、备份和上传素材严禁提交。
 - **多语言（用户端）**：支持简体中文 / 繁体中文 / 英语，切换器在顶栏右上角。**简体中文是唯一权威源**——
   - 新增或修改界面文案：只改 `src/i18n/locales/zh-CN.ts`，然后 `en.ts` 与 `zh-TW.ts` **必须同步补齐**；漏任何一个键，`npm run lint` 会直接报 `missing property` 编译失败。

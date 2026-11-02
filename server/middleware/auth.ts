@@ -7,7 +7,6 @@ import {
   ADMIN_SESSION_TTL_MS,
   ADMIN_PASSWORD,
   ADMIN_PHONE,
-  ADMIN_SECOND_PASSWORD,
   APP_ORIGIN,
   BASE_PATH,
   COOKIE_SECURE,
@@ -48,9 +47,8 @@ export function sanitizeUser(user: UserProfile): UserProfile {
 }
 
 export function getAdminAuthVersion(): string {
-  const security = db.getAdminSecurity();
-  // 安全码也纳入版本：轮换安全码后必须让已签发的管理员会话失效
-  return sha256(`${ADMIN_PHONE}:${ADMIN_PASSWORD}:${ADMIN_SECOND_PASSWORD}:${security?.totpSecretEnc || ''}`);
+  // 管理员凭据只来自环境变量；密码一旦变更，版本变化会让所有已签发的管理员会话失效。
+  return sha256(`${ADMIN_PHONE}:${ADMIN_PASSWORD}`);
 }
 
 function readCookie(req: Request, name: string): string | undefined {
@@ -193,7 +191,7 @@ export function csrfProtection(req: AuthRequest, res: Response, next: NextFuncti
   const routePath = `${req.baseUrl}${req.path}`;
   // BASE_PATH 挂载后 req.baseUrl 会带上前缀，豁免表必须用同一前缀拼出完整路径比对，
   // 否则豁免全部失配，登录等未登录即可调用的端点会被误拦成 403。
-  const exempt = [`${BASE_PATH}/api/auth/login`, `${BASE_PATH}/api/auth/change-password`, `${BASE_PATH}/api/admin/login`].some((path) => routePath === path) || routePath.startsWith(`${BASE_PATH}/api/admin/mfa/`);
+  const exempt = [`${BASE_PATH}/api/auth/login`, `${BASE_PATH}/api/auth/change-password`, `${BASE_PATH}/api/admin/login`].some((path) => routePath === path);
   if (exempt) {
     next();
     return;

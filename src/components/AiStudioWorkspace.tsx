@@ -1,12 +1,11 @@
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Skill,
   UserProfile,
   ChatMessage,
   LLMConfig,
   ChatSession,
-  formatBookTitle,
-  cleanBookTitle,
+  FollowedSkill,
   formatUserDisplayName,
   formatMessageTimestamp,
   getEffectiveMembershipTier,
@@ -16,11 +15,12 @@ import {
 import { apiFetch, tryLogout } from '../lib/apiFetch';
 import { copyText } from '../lib/clipboard';
 import { useI18n, membershipTierKey, formatBookTitleByLocale, serverMessage } from '../i18n';
-import { BookDetailModal } from './BookDetailModal';
 import { MembershipModal } from './MembershipModal';
 import { MarkdownMessage } from './MarkdownMessage';
 import { LanguageSwitcher } from './LanguageSwitcher';
-import MarketSection from './MarketSection';
+import { PlazaView } from './PlazaView';
+import { FollowListView } from './FollowListView';
+import { usePlazaController } from '../lib/usePlazaController';
 import {
   Send,
   Book,
@@ -38,6 +38,8 @@ import {
   User,
   Crown,
   UserX,
+  ShieldCheck,
+  Star,
 } from 'lucide-react';
 
 interface AiStudioWorkspaceProps {
@@ -78,10 +80,12 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 }) => {
   const { t, locale } = useI18n();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [followedSkills, setFollowedSkills] = useState<FollowedSkill[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
-  // Main view state: 'chat' (active dialogue), 'market' (book grid), or 'mentor' (mentor grid)
-  const [mainView, setMainView] = useState<'chat' | 'market' | 'mentor'>('market');
+  // Main view state: 'chat' (active dialogue), 'market' (book grid), 'mentor' (mentor grid),
+  // 'reliable' (reliable grid) or 'follows' (followed skills grid)
+  const [mainView, setMainView] = useState<'chat' | 'market' | 'mentor' | 'reliable' | 'follows'>('market');
 
   // Chat Input Drafts per skill/book to prevent text leakage across different book pages
   const [inputDrafts, setInputDrafts] = useState<Record<string, string>>({});
@@ -154,31 +158,72 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     };
   }, [user?.id, user?.role, cancelOngoingGeneration]);
 
-  // Category filter & search state for Market view
-  const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES);
-  const [marketSearch, setMarketSearch] = useState('');
+  // 关注列表与登录态绑定：登录/换号时拉取，登出时清空。
+  useEffect(() => {
+    if (!user) {
+      setFollowedSkills([]);
+      return;
+    }
+    apiFetch('/api/follows')
+      .then((res) => (res.ok ? res.json() : { follows: [] }))
+      .then((data) => {
+        if (Array.isArray(data.follows)) setFollowedSkills(data.follows);
+      })
+      .catch((e) => console.warn('Fetch follows error:', e));
+  }, [user?.id]);
+
+  const followedSkillIds = React.useMemo(
+    () => new Set(followedSkills.map((skill) => skill.id)),
+    [followedSkills]
+  );
+
+  // 关注/取消关注采用乐观更新：先改本地状态让按钮即时响应，请求失败再回滚并提示。
+  const handleToggleFollow = async (skill: Skill) => {
+    if (!user) {
+      showToast(t('workspace.loginToFollow'), 'info');
+      onOpenLogin();
+      return;
+    }
+    const isFollowed = followedSkillIds.has(skill.id);
+    const previous = followedSkills;
+    if (isFollowed) {
+      setFollowedSkills((prev) => prev.filter((item) => item.id !== skill.id));
+    } else {
+      setFollowedSkills((prev) => [{ ...skill, followedAt: new Date().toISOString() }, ...prev]);
+    }
+    try {
+      const res = isFollowed
+        ? await apiFetch(`/api/follows/${encodeURIComponent(skill.id)}`, { method: 'DELETE' })
+        : await apiFetch('/api/follows', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ skillId: skill.id }),
+          });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn('Toggle follow error:', err);
+      setFollowedSkills(previous);
+      showToast(t('workspace.followFailed'), 'warning');
+    }
+  };
+
+  // 会话欢迎语按技能类型出文案：导师用作者名，书籍与可靠内容用书名号标题。
+  const welcomeMessageFor = (skill: Skill, isNew: boolean): string => {
+    if (skill.skillType === 'mentor') {
+      return t(isNew ? 'workspace.welcomeMentorNew' : 'workspace.welcomeMentor', { author: skill.author });
+    }
+    if (skill.skillType === 'reliable') {
+      return t(isNew ? 'workspace.welcomeReliableNew' : 'workspace.welcomeReliable', {
+        title: formatBookTitleByLocale(skill.title, locale),
+      });
+    }
+    return t(isNew ? 'workspace.welcomeBookNew' : 'workspace.welcomeBook', {
+      title: formatBookTitleByLocale(skill.title, locale),
+    });
+  };
+
+  // 分类顺序 / 标签更新的版本号：后台改动后通过 storage 事件与自定义事件触发重新拉取。
   const [catChangeVersion, setCatChangeVersion] = useState(0);
-
-  // Pagination for Market cards (20 cards per screen/batch)
-  const PAGE_SIZE = 20;
-  const [visibleCardCount, setVisibleCardCount] = useState<number>(PAGE_SIZE);
-
-  useEffect(() => {
-    setVisibleCardCount(PAGE_SIZE);
-  }, [selectedCategory, marketSearch]);
-
-  // --- 导师广场独立状态（与书籍广场对称） ---
-  const [mentorSelectedCategory, setMentorSelectedCategory] = useState<string>(ALL_CATEGORIES);
-  const [mentorSearch, setMentorSearch] = useState('');
-  const [mentorVisibleCardCount, setMentorVisibleCardCount] = useState<number>(PAGE_SIZE);
-  const mentorTagsContainerRef = useRef<HTMLDivElement>(null);
-  const [mentorIsAllCategoriesModalOpen, setMentorIsAllCategoriesModalOpen] = useState(false);
-  const [mentorDetailSkill, setMentorDetailSkill] = useState<Skill | null>(null);
-  const [mentorMaxVisibleCategories, setMentorMaxVisibleCategories] = useState<number>(0);
-
-  useEffect(() => {
-    setMentorVisibleCardCount(PAGE_SIZE);
-  }, [mentorSelectedCategory, mentorSearch]);
 
   useEffect(() => {
     const handleCategoryUpdate = () => {
@@ -258,53 +303,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     };
   }, [skills, catChangeVersion, dbTags]);
 
-  const tagsContainerRef = useRef<HTMLDivElement>(null);
-  const [isAllCategoriesModalOpen, setIsAllCategoriesModalOpen] = useState(false);
-  const [detailSkill, setDetailSkill] = useState<Skill | null>(null);
-
-  const otherCategories = React.useMemo(() => {
-    return categories.filter((cat) => cat !== ALL_CATEGORIES);
-  }, [categories]);
-
-  const [maxVisibleCategories, setMaxVisibleCategories] = useState<number>(otherCategories.length);
-
-  useEffect(() => {
-    if (mainView === 'market') {
-      setMaxVisibleCategories(otherCategories.length);
-    }
-    if (mainView === 'mentor') {
-      setMentorMaxVisibleCategories(otherCategories.length);
-    }
-  }, [mainView, categories, catChangeVersion, otherCategories.length]);
-
-  useEffect(() => {
-    const handleResize = () => {
-      if (mainView === 'market') {
-        setMaxVisibleCategories(otherCategories.length);
-      }
-      if (mainView === 'mentor') {
-        setMentorMaxVisibleCategories(otherCategories.length);
-      }
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [mainView, otherCategories.length]);
-
-  useLayoutEffect(() => {
-    if (mainView === 'market' && tagsContainerRef.current) {
-      if (tagsContainerRef.current.scrollHeight > 68 && maxVisibleCategories > 0) {
-        setMaxVisibleCategories((prev) => Math.max(0, prev - 1));
-      }
-    }
-  }, [mainView, maxVisibleCategories, categories]);
-
-  useLayoutEffect(() => {
-    if (mainView === 'mentor' && mentorTagsContainerRef.current) {
-      if (mentorTagsContainerRef.current.scrollHeight > 68 && mentorMaxVisibleCategories > 0) {
-        setMentorMaxVisibleCategories((prev) => Math.max(0, prev - 1));
-      }
-    }
-  }, [mainView, mentorMaxVisibleCategories, categories]);
+  // 三个广场共享同一套筛选/分页逻辑，各自保留独立的搜索、分类与分页进度。
+  const bookPlaza = usePlazaController({ skills, skillType: 'book', categories, renamedCategoriesMap, isActive: mainView === 'market' });
+  const mentorPlaza = usePlazaController({ skills, skillType: 'mentor', categories, renamedCategoriesMap, isActive: mainView === 'mentor' });
+  const reliablePlaza = usePlazaController({ skills, skillType: 'reliable', categories, renamedCategoriesMap, isActive: mainView === 'reliable' });
 
   // Current active session & skill with strict synchronization
   const activeSession = React.useMemo(() => {
@@ -389,9 +391,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         {
           id: `init-msg-${Date.now()}`,
           role: 'assistant',
-          content: currentSkillToUse.skillType === 'mentor'
-            ? t('workspace.welcomeMentorNew', { author: currentSkillToUse.author })
-            : t('workspace.welcomeBookNew', { title: formatBookTitleByLocale(currentSkillToUse.title, locale) }),
+          content: welcomeMessageFor(currentSkillToUse, true),
           timestamp: new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
           recommendedQuestions: initialQuestions,
         },
@@ -444,9 +444,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           {
             id: `init-msg-${Date.now()}`,
             role: 'assistant',
-            content: skill.skillType === 'mentor'
-              ? t('workspace.welcomeMentor', { author: skill.author })
-              : t('workspace.welcomeBook', { title: formatBookTitleByLocale(skill.title, locale) }),
+            content: welcomeMessageFor(skill, false),
             timestamp: new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
             recommendedQuestions: initialQuestions,
           },
@@ -539,6 +537,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     }
     setUser(null);
     setSessions([]);
+    setFollowedSkills([]);
     setActiveSessionId(null);
     setMainView('market');
     setIsUserMenuOpen(false);
@@ -781,65 +780,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     setTimeout(() => setCopiedMsgId(null), 2000);
   };
 
-  const sortedSkills = [...skills].filter((s) => (s.skillType || 'book') === 'book').sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0));
-
-  const bookSkills = skills.filter((s) => (s.skillType || 'book') === 'book');
-
-  const marketFilteredSkills = bookSkills
-    .filter((skill) => {
-      const mappedCategory = renamedCategoriesMap[skill.category] || skill.category;
-      const matchesCategory =
-        selectedCategory === ALL_CATEGORIES ||
-        mappedCategory === selectedCategory ||
-        skill.category === selectedCategory ||
-        skill.tags?.some((t) => (renamedCategoriesMap[t] || t) === selectedCategory);
-      const rawQ = marketSearch.toLowerCase().trim();
-      const cleanQ = cleanBookTitle(rawQ).toLowerCase();
-      const matchesSearch =
-        !rawQ ||
-        skill.title.toLowerCase().includes(rawQ) ||
-        (cleanQ ? skill.title.toLowerCase().includes(cleanQ) : false) ||
-        (cleanQ ? cleanBookTitle(skill.title).toLowerCase().includes(cleanQ) : false) ||
-        (skill.author ? skill.author.toLowerCase().includes(rawQ) : false) ||
-        (cleanQ && skill.author ? skill.author.toLowerCase().includes(cleanQ) : false);
-      return matchesCategory && matchesSearch;
-    })
-    .sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0));
-
-  const displayedSkills = marketFilteredSkills.slice(0, visibleCardCount);
-  const hasMoreCards = visibleCardCount < marketFilteredSkills.length;
-  const remainingCount = marketFilteredSkills.length - visibleCardCount;
-
-  // --- 导师广场数据（仅 skillType=mentor） ---
-  const mentorSkills = skills.filter((s) => s.skillType === 'mentor');
-
-  const mentorSortedSkills = [...mentorSkills].sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0));
-
-  const mentorFilteredSkills = mentorSkills
-    .filter((skill) => {
-      const mappedCategory = renamedCategoriesMap[skill.category] || skill.category;
-      const matchesCategory =
-        mentorSelectedCategory === ALL_CATEGORIES ||
-        mappedCategory === mentorSelectedCategory ||
-        skill.category === mentorSelectedCategory ||
-        skill.tags?.some((t) => (renamedCategoriesMap[t] || t) === mentorSelectedCategory);
-      const rawQ = mentorSearch.toLowerCase().trim();
-      const cleanQ = cleanBookTitle(rawQ).toLowerCase();
-      const matchesSearch =
-        !rawQ ||
-        skill.title.toLowerCase().includes(rawQ) ||
-        (cleanQ ? skill.title.toLowerCase().includes(cleanQ) : false) ||
-        (cleanQ ? cleanBookTitle(skill.title).toLowerCase().includes(cleanQ) : false) ||
-        (skill.author ? skill.author.toLowerCase().includes(rawQ) : false) ||
-        (cleanQ && skill.author ? skill.author.toLowerCase().includes(cleanQ) : false);
-      return matchesCategory && matchesSearch;
-    })
-    .sort((a, b) => (b.searchCount || 0) - (a.searchCount || 0));
-
-  const mentorDisplayedSkills = mentorFilteredSkills.slice(0, mentorVisibleCardCount);
-  const mentorHasMoreCards = mentorVisibleCardCount < mentorFilteredSkills.length;
-  const mentorRemainingCount = mentorFilteredSkills.length - mentorVisibleCardCount;
-
   return (
     <div className="flex flex-col h-screen w-full bg-white text-gray-900 font-sans overflow-hidden select-none">
       {/* ========================================================================= */}
@@ -1033,6 +973,48 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                 <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
               </div>
             </button>
+            <button
+              onClick={() => setMainView('reliable')}
+              className={`w-full py-3 px-3.5 rounded-xl font-semibold text-xs transition-all flex items-center justify-between cursor-pointer border ${
+                mainView === 'reliable'
+                  ? 'bg-[#f4efe6] text-[#2c221e] border-[#e2d8c3] font-bold shadow-2xs'
+                  : 'bg-white hover:bg-gray-100 text-gray-900 shadow-2xs border-gray-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-gray-700" />
+                <span>{t('workspace.reliablePlaza')}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
+              </div>
+            </button>
+            <button
+              onClick={() => {
+                if (!user) {
+                  showToast(t('workspace.loginToFollow'), 'info');
+                  onOpenLogin();
+                  return;
+                }
+                setMainView('follows');
+              }}
+              className={`w-full py-3 px-3.5 rounded-xl font-semibold text-xs transition-all flex items-center justify-between cursor-pointer border ${
+                mainView === 'follows'
+                  ? 'bg-[#f4efe6] text-[#2c221e] border-[#e2d8c3] font-bold shadow-2xs'
+                  : 'bg-white hover:bg-gray-100 text-gray-900 shadow-2xs border-gray-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Star className={`w-4 h-4 ${mainView === 'follows' ? 'text-amber-500 fill-amber-500' : 'text-gray-700'}`} />
+                <span>{t('workspace.followList')}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {user && followedSkills.length > 0 && (
+                  <span className="text-[10px] font-mono text-gray-400">{followedSkills.length}</span>
+                )}
+                <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
+              </div>
+            </button>
           </div>
 
           {/* Middle Scrollable Section: Sessions List */}
@@ -1137,60 +1119,56 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         {/* ========================================================================= */}
         <main className="flex-1 flex flex-col h-full bg-white relative overflow-hidden">
           {mainView === 'market' ? (
-            /* ==================== BOOK MARKET VIEW ==================== */
-            <MarketSection
-              search={marketSearch}
-              onSearchChange={setMarketSearch}
-              searchPlaceholder={t('market.searchPlaceholder')}
-              tagsContainerRef={tagsContainerRef}
-              selectedCategory={selectedCategory}
-              onCategoryChange={setSelectedCategory}
-              allSkillsCount={bookSkills.length}
-              otherCategories={otherCategories}
-              maxVisibleCategories={maxVisibleCategories}
-              onOpenAllCategories={() => setIsAllCategoriesModalOpen(true)}
-              filteredSkills={marketFilteredSkills}
-              displayedSkills={displayedSkills}
-              sortedSkills={sortedSkills}
+            /* ==================== BOOK PLAZA VIEW ==================== */
+            <PlazaView
+              controller={bookPlaza}
               user={user}
+              searchPlaceholder={t('market.searchPlaceholder')}
+              unitLabel={t('market.unitBooks')}
+              allTagsTitle={t('workspace.allBookTags')}
               renamedCategoriesMap={renamedCategoriesMap}
               deletedCategoriesSet={deletedCategoriesSet}
-              validCategories={categories}
-              hasMoreCards={hasMoreCards}
-              onLoadMore={() => setVisibleCardCount((prev) => prev + PAGE_SIZE)}
-              pageSize={PAGE_SIZE}
-              remainingCount={remainingCount}
+              followedSkillIds={followedSkillIds}
+              onToggleFollow={handleToggleFollow}
               onSelectSkill={handleSelectBookFromMarket}
-              onViewDetail={(skill) => setDetailSkill(skill)}
-              unitLabel={t('market.unitBooks')}
             />
           ) : mainView === 'mentor' ? (
-            /* ==================== MENTOR MARKET VIEW ==================== */
-            <MarketSection
-              search={mentorSearch}
-              onSearchChange={setMentorSearch}
-              searchPlaceholder={t('market.searchPlaceholderMentor')}
-              tagsContainerRef={mentorTagsContainerRef}
-              selectedCategory={mentorSelectedCategory}
-              onCategoryChange={setMentorSelectedCategory}
-              allSkillsCount={mentorSkills.length}
-              otherCategories={otherCategories}
-              maxVisibleCategories={mentorMaxVisibleCategories}
-              onOpenAllCategories={() => setMentorIsAllCategoriesModalOpen(true)}
-              filteredSkills={mentorFilteredSkills}
-              displayedSkills={mentorDisplayedSkills}
-              sortedSkills={mentorSortedSkills}
+            /* ==================== MENTOR PLAZA VIEW ==================== */
+            <PlazaView
+              controller={mentorPlaza}
               user={user}
+              searchPlaceholder={t('market.searchPlaceholderMentor')}
+              unitLabel={t('market.unitMentors')}
+              allTagsTitle={t('workspace.allMentorTags')}
               renamedCategoriesMap={renamedCategoriesMap}
               deletedCategoriesSet={deletedCategoriesSet}
-              validCategories={categories}
-              hasMoreCards={mentorHasMoreCards}
-              onLoadMore={() => setMentorVisibleCardCount((prev) => prev + PAGE_SIZE)}
-              pageSize={PAGE_SIZE}
-              remainingCount={mentorRemainingCount}
+              followedSkillIds={followedSkillIds}
+              onToggleFollow={handleToggleFollow}
               onSelectSkill={handleSelectBookFromMarket}
-              onViewDetail={(skill) => setMentorDetailSkill(skill)}
-              unitLabel={t('market.unitMentors')}
+            />
+          ) : mainView === 'reliable' ? (
+            /* ==================== RELIABLE PLAZA VIEW ==================== */
+            <PlazaView
+              controller={reliablePlaza}
+              user={user}
+              searchPlaceholder={t('market.searchPlaceholderReliable')}
+              unitLabel={t('market.unitReliable')}
+              allTagsTitle={t('workspace.allReliableTags')}
+              renamedCategoriesMap={renamedCategoriesMap}
+              deletedCategoriesSet={deletedCategoriesSet}
+              followedSkillIds={followedSkillIds}
+              onToggleFollow={handleToggleFollow}
+              onSelectSkill={handleSelectBookFromMarket}
+            />
+          ) : mainView === 'follows' ? (
+            /* ==================== FOLLOW LIST VIEW ==================== */
+            <FollowListView
+              follows={followedSkills}
+              followedSkillIds={followedSkillIds}
+              user={user}
+              onToggleFollow={handleToggleFollow}
+              onSelectSkill={handleSelectBookFromMarket}
+              onGoBrowse={() => setMainView('market')}
             />
           ) : (
             /* ==================== CHAT VIEW ==================== */
@@ -1456,118 +1434,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           </div>
         </div>
       )}
-
-      {/* All Categories Modal */}
-      {isAllCategoriesModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-gray-200 p-6 space-y-4 text-left relative animate-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-              <h3 className="text-base font-bold text-gray-900 font-serif flex items-center gap-2">
-                <span>{t('workspace.allBookTags')}</span>
-                <span className="text-xs font-sans font-normal text-gray-500">
-                  {t('workspace.tagsCount', { count: categories.length })}
-                </span>
-              </h3>
-              <button
-                onClick={() => setIsAllCategoriesModalOpen(false)}
-                className="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 max-h-[55vh] overflow-y-auto p-1">
-              {categories.map((cat) => {
-                const isSelected = cat === selectedCategory;
-                return (
-                  <button
-                    key={cat}
-                    onClick={() => {
-                      setSelectedCategory(cat);
-                      setIsAllCategoriesModalOpen(false);
-                    }}
-                    className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-[#f4efe6] text-[#2c221e] font-bold shadow-xs border border-[#e2d8c3]'
-                        : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-                    }`}
-                  >
-                    #{cat === ALL_CATEGORIES ? t('workspace.allWithCount', { count: bookSkills.length }) : cat}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 导师广场 All Categories Modal */}
-      {mentorIsAllCategoriesModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-gray-200 p-6 space-y-4 text-left relative animate-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-              <h3 className="text-base font-bold text-gray-900 font-serif flex items-center gap-2">
-                <span>{t('workspace.allMentorTags')}</span>
-                <span className="text-xs font-sans font-normal text-gray-500">
-                  {t('workspace.tagsCount', { count: categories.length })}
-                </span>
-              </h3>
-              <button
-                onClick={() => setMentorIsAllCategoriesModalOpen(false)}
-                className="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 max-h-[55vh] overflow-y-auto p-1">
-              {categories.map((cat) => {
-                const isSelected = cat === mentorSelectedCategory;
-                return (
-                  <button
-                    key={cat}
-                    onClick={() => {
-                      setMentorSelectedCategory(cat);
-                      setMentorIsAllCategoriesModalOpen(false);
-                    }}
-                    className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-[#f4efe6] text-[#2c221e] font-bold shadow-xs border border-[#e2d8c3]'
-                        : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-                    }`}
-                  >
-                    #{cat === ALL_CATEGORIES ? t('workspace.allWithCount', { count: mentorSkills.length }) : cat}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Book Detail Introduction Modal */}
-      <BookDetailModal
-        skill={detailSkill}
-        user={user}
-        isOpen={Boolean(detailSkill)}
-        onClose={() => setDetailSkill(null)}
-        onStartChat={(skill) => {
-          setDetailSkill(null);
-          handleSelectBookFromMarket(skill);
-        }}
-      />
-
-      {/* 导师详情 Modal（复用 BookDetailModal） */}
-      <BookDetailModal
-        skill={mentorDetailSkill}
-        user={user}
-        isOpen={Boolean(mentorDetailSkill)}
-        onClose={() => setMentorDetailSkill(null)}
-        onStartChat={(skill) => {
-          setMentorDetailSkill(null);
-          handleSelectBookFromMarket(skill);
-        }}
-      />
 
       {/* 会员订阅窗口（禁用态：仅浏览套餐，开通按钮置灰） */}
       {isMembershipModalOpen && (

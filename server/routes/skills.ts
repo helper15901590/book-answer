@@ -3,7 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { db } from '../db.js';
 import { AuthRequest, requireAdmin } from '../middleware/auth.js';
 import { generateRecommendedQuestionsFromLLM } from '../services/llm/questions.js';
-import { PublicSkill, Skill, cleanBookTitle } from '../../src/types.js';
+import { PublicSkill, Skill, cleanBookTitle, isSkillType } from '../../src/types.js';
 
 const questionsLimiter = rateLimit({ windowMs: 60_000, limit: 10, message: { error: '请求过于频繁，请稍后再试' } });
 
@@ -52,7 +52,7 @@ export function registerSkillsRoutes(app: Express): void {
   app.get('/api/skills', (req, res) => {
     const { search, category, type } = req.query;
     let skills = db.getSkills();
-    if (type && typeof type === 'string' && (type === 'book' || type === 'mentor')) {
+    if (typeof type === 'string' && isSkillType(type)) {
       skills = skills.filter((skill) => (skill.skillType || 'book') === type);
     }
     if (search && typeof search === 'string') {

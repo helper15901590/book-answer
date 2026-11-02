@@ -14,6 +14,7 @@ import { logger } from './services/logger.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { ensureAdminSeed } from './services/adminSeed.js';
 import { registerSkillsRoutes } from './routes/skills.js';
+import { registerFollowRoutes } from './routes/follows.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerConfigRoutes } from './routes/config.js';
@@ -79,6 +80,7 @@ export async function createApp() {
   ensureAdminSeed();
   registerAuthRoutes(app);
   registerSkillsRoutes(app);
+  registerFollowRoutes(app);
   registerChatRoutes(app);
   registerAdminRoutes(app);
   registerConfigRoutes(app);

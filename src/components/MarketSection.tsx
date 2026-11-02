@@ -34,6 +34,9 @@ interface MarketSectionProps {
   /** 卡片事件 */
   onSelectSkill: (skill: Skill) => void;
   onViewDetail: (skill: Skill) => void;
+  /** 关注 */
+  followedSkillIds: Set<string>;
+  onToggleFollow: (skill: Skill) => void;
   /** 尾部文案单位（"本原著书籍" / "位导师"） */
   unitLabel: string;
 }
@@ -62,6 +65,8 @@ export default function MarketSection({
   remainingCount,
   onSelectSkill,
   onViewDetail,
+  followedSkillIds,
+  onToggleFollow,
   unitLabel,
 }: MarketSectionProps) {
   const { t } = useI18n();
@@ -162,6 +167,8 @@ export default function MarketSection({
                   renamedCategoriesMap={renamedCategoriesMap}
                   deletedCategoriesSet={deletedCategoriesSet}
                   validCategories={validCategories}
+                  isFollowed={followedSkillIds.has(skill.id)}
+                  onToggleFollow={onToggleFollow}
                   onSelectSkill={onSelectSkill}
                   onViewDetail={onViewDetail}
                 />

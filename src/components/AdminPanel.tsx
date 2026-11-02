@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LLMConfig, MembershipTier, Skill, UserProfile, formatBookTitle, getEffectiveMembershipTier } from '../types';
+import { LLMConfig, MembershipTier, Skill, SkillType, UserProfile, FollowedSkill, formatBookTitle, getEffectiveMembershipTier } from '../types';
 import ReactMarkdown from 'react-markdown';
 import { copyText } from '../lib/clipboard';
 import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY } from '../data/initialData';
@@ -35,6 +35,7 @@ import {
   UserPlus,
   Sparkles,
   Loader2,
+  Star,
 } from 'lucide-react';
 import { apiFetch, assetSrc } from '../lib/apiFetch';
 
@@ -52,6 +53,9 @@ interface DailyCount {
   date: string;
   count: number;
 }
+
+// 后台用户列表在共享 UserProfile 之外附带关注数（仅后台 DTO，不下发到用户端）
+type AdminUser = UserProfile & { followCount?: number };
 
 // 与 /api/admin/stats 响应保持一致（db.getAdminStats() 全量字段 + metrics 运行态字段）
 interface AdminStats {
@@ -200,7 +204,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [activeTab, setActiveTab] = useState<'dashboard' | 'skills' | 'categories' | 'resources' | 'users' | 'llm' | 'agreements'>('dashboard');
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState<AdminStats | null>(null);
-  const [adminUsers, setAdminUsers] = useState<UserProfile[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [previewAgreementType, setPreviewAgreementType] = useState<'terms' | 'privacy' | null>(null);
 
   // Pagination States
@@ -210,7 +214,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Search Query States
   const [skillSearchQuery, setSkillSearchQuery] = useState('');
-  const [skillTypeFilter, setSkillTypeFilter] = useState<'all' | 'book' | 'mentor'>('all');
+  const [skillTypeFilter, setSkillTypeFilter] = useState<'all' | 'book' | 'mentor' | 'reliable'>('all');
   const [userSearchQuery, setUserSearchQuery] = useState('');
 
   // Action Dropdown State
@@ -280,6 +284,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     code: '',
     membershipTier: 'monthly_member',
   });
+
+  // 用户关注列表查看弹窗
+  const [viewingFollowsUser, setViewingFollowsUser] = useState<AdminUser | null>(null);
+  const [userFollows, setUserFollows] = useState<FollowedSkill[]>([]);
+  const [isUserFollowsLoading, setIsUserFollowsLoading] = useState(false);
 
   // 二次确认弹窗状态
   const [confirmModal, setConfirmModal] = useState<{
@@ -502,6 +511,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  // 打开某个用户的关注列表：只读展示，数据按用户懒加载。
+  const handleOpenUserFollows = async (u: AdminUser) => {
+    setViewingFollowsUser(u);
+    setUserFollows([]);
+    setIsUserFollowsLoading(true);
+    try {
+      const res = await apiFetch(`/api/admin/users/${u.id}/follows`).then(ensureAdminAuthorized);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.follows)) setUserFollows(data.follows);
+      else showToast(data.message || data.error || '加载关注列表失败');
+    } catch {
+      // ensureAdminAuthorized 在会话失效时会刷新页面；这里兜住网络类异常
+      showToast('加载关注列表失败');
+    } finally {
+      setIsUserFollowsLoading(false);
+    }
+  };
+
   const handleDeleteUser = (u: UserProfile) => {
     setConfirmModal({
       isOpen: true,
@@ -653,7 +680,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleSaveSkill = async () => {
     if (!editingSkill?.title?.trim() || !editingSkill?.author?.trim()) {
-      alert(editingSkill?.skillType === 'mentor' ? '请填写导师姓名' : '请填写真实的书籍名称与作者');
+      alert(editingSkill?.skillType === 'mentor' ? '请填写导师姓名' : editingSkill?.skillType === 'reliable' ? '请填写可靠内容名称与作者' : '请填写真实的书籍名称与作者');
       return;
     }
 
@@ -689,7 +716,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }).then(ensureAdminAuthorized);
       const data = await res.json();
       if (data.success) {
-        showToast(editingSkill?.skillType === 'mentor' ? '导师数据更新成功！' : '书籍数据更新成功！');
+        showToast(editingSkill?.skillType === 'mentor' ? '导师数据更新成功！' : editingSkill?.skillType === 'reliable' ? '可靠内容更新成功！' : '书籍数据更新成功！');
         setIsSkillModalOpen(false);
         setEditingSkill(null);
         if (data.skill && setSkills) {
@@ -713,17 +740,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleDeleteSkill = (id: string, title: string) => {
     const targetSkill = skills.find((s) => s.id === id);
     const isMentor = targetSkill?.skillType === 'mentor';
+    const isReliable = targetSkill?.skillType === 'reliable';
+    const typeLabel = isMentor ? '导师' : isReliable ? '可靠内容' : '书籍';
     setConfirmModal({
       isOpen: true,
-      title: `确认下架并删除${isMentor ? '导师' : '书籍'}`,
-      description: `确定要下架并删除${isMentor ? `【${title}】导师` : `${formatBookTitle(title)}原著`}吗？该操作不可撤销。`,
+      title: `确认下架并删除${typeLabel}`,
+      description: `确定要下架并删除${isMentor ? `【${title}】导师` : isReliable ? `【${title}】可靠内容` : `${formatBookTitle(title)}原著`}吗？该操作不可撤销。`,
       confirmText: '确认删除',
       onConfirm: async () => {
         try {
           const res = await apiFetch(`/api/admin/skills/${id}`, { method: 'DELETE' });
           const data = await res.json();
           if (data.success) {
-            showToast(`已成功下架${isMentor ? `【${title}】` : formatBookTitle(title)}`);
+            showToast(`已成功下架${isMentor ? `【${title}】` : isReliable ? `【${title}】` : formatBookTitle(title)}`);
             fetchAdminData();
           }
         } catch (e) {
@@ -1285,7 +1314,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       )}
                     </div>
                     <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5 shrink-0">
-                      {([['all', '全部'], ['book', '书籍'], ['mentor', '导师']] as const).map(([val, label]) => (
+                      {([['all', '全部'], ['book', '书籍'], ['mentor', '导师'], ['reliable', '可靠']] as const).map(([val, label]) => (
                         <button
                           key={val}
                           onClick={() => { setSkillTypeFilter(val); setSkillsPage(1); }}
@@ -1322,7 +1351,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-2xs shrink-0"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>新增导师书籍</span>
+                      <span>新增内容</span>
                     </button>
                   </div>
 
@@ -1330,7 +1359,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <table className="w-full text-left text-xs border-collapse table-fixed">
                       <thead className="bg-slate-50/70 border-b border-slate-200/80 text-slate-500 font-medium">
                         <tr>
-                          <th className="py-2.5 px-4 font-medium w-auto">{skillTypeFilter === 'mentor' ? '导师' : '书名 / 作者'}</th>
+                          <th className="py-2.5 px-4 font-medium w-auto">{skillTypeFilter === 'mentor' ? '导师' : skillTypeFilter === 'reliable' ? '名称 / 作者' : '书名 / 作者'}</th>
                           <th className="py-2.5 px-4 font-medium w-24">类型</th>
                           <th className="py-2.5 px-4 font-medium w-40">分类标签</th>
                           <th className="py-2.5 px-4 font-medium w-28">热度指数</th>
@@ -1341,7 +1370,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         {displayedSkills.length === 0 ? (
                           <tr>
                             <td colSpan={5} className="py-12 text-center text-slate-400 text-xs font-normal">
-                              未找到匹配的{skillTypeFilter === 'mentor' ? '导师' : skillTypeFilter === 'book' ? '书籍' : '图书导师'}
+                              未找到匹配的{skillTypeFilter === 'mentor' ? '导师' : skillTypeFilter === 'book' ? '书籍' : skillTypeFilter === 'reliable' ? '可靠内容' : '图书导师'}
                             </td>
                           </tr>
                         ) : (
@@ -1356,6 +1385,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               <td className="py-3 px-4 whitespace-nowrap">
                                 {(s.skillType || 'book') === 'mentor' ? (
                                   <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200/60 whitespace-nowrap shrink-0">导师</span>
+                                ) : (s.skillType || 'book') === 'reliable' ? (
+                                  <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/60 whitespace-nowrap shrink-0">可靠</span>
                                 ) : (
                                   <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-200/60 whitespace-nowrap shrink-0">书籍</span>
                                 )}
@@ -1692,13 +1723,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <th className="py-2.5 px-4 font-medium w-32">会员等级</th>
                           <th className="py-2.5 px-4 font-medium w-36">会员有效期</th>
                           <th className="py-2.5 px-4 font-medium w-32 text-right">调用额度</th>
-                          <th className="py-2.5 px-4 font-medium text-center w-36">操作</th>
+                          <th className="py-2.5 px-4 font-medium w-20 text-center">关注数</th>
+                          <th className="py-2.5 px-4 font-medium text-center w-44">操作</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-slate-800 bg-white">
                         {displayedUsers.length === 0 ? (
                           <tr>
-                            <td colSpan={5} className="py-12 text-center text-slate-400 text-xs font-normal">
+                            <td colSpan={6} className="py-12 text-center text-slate-400 text-xs font-normal">
                               未找到匹配的用户记录
                             </td>
                           </tr>
@@ -1776,8 +1808,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 <td className="py-3 px-4 text-right font-mono text-slate-600 whitespace-nowrap">
                                   {used} / {maxLimit} {quotaUnit}
                                 </td>
+                                <td className="py-3 px-4 text-center font-mono text-slate-600 whitespace-nowrap">
+                                  {u.followCount ?? 0}
+                                </td>
                                 <td className="py-3 px-4 text-center whitespace-nowrap">
                                   <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      type="button"
+                                      title="查看关注"
+                                      onClick={() => handleOpenUserFollows(u)}
+                                      className="p-1.5 hover:bg-amber-50 text-slate-400 hover:text-amber-600 rounded-lg transition-colors cursor-pointer"
+                                    >
+                                      <Star className={`w-3.5 h-3.5 ${(u.followCount || 0) > 0 ? 'fill-amber-500 text-amber-500' : ''}`} />
+                                    </button>
                                     <button
                                       type="button"
                                       title="编辑用户权益与等级"
@@ -2420,7 +2463,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <div className="bg-white rounded-xl p-5 w-full max-w-lg shadow-xl border border-slate-200/90 space-y-4 max-h-[85vh] overflow-y-auto text-left">
             <div className="flex items-center justify-between border-b pb-3 border-slate-100">
               <h3 className="text-xs font-semibold text-slate-900">
-                {editingSkill.id ? '编辑' : '新增'}{editingSkill.skillType === 'mentor' ? '导师' : '图书'}
+                {editingSkill.id ? '编辑' : '新增'}{editingSkill.skillType === 'mentor' ? '导师' : editingSkill.skillType === 'reliable' ? '可靠内容' : '图书'}
               </h3>
               <button
                 onClick={() => setIsSkillModalOpen(false)}
@@ -2436,7 +2479,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <select
                   value={editingSkill.skillType || 'book'}
                   onChange={(e) => {
-                    const next = e.target.value as 'book' | 'mentor';
+                    const next = e.target.value as SkillType;
                     setEditingSkill((prev) => prev
                       ? next === 'mentor'
                         ? { ...prev, skillType: next, author: prev.title || '' }
@@ -2448,12 +2491,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 >
                   <option value="book">书籍（原著蒸馏）</option>
                   <option value="mentor">导师（人物思想）</option>
+                  <option value="reliable">可靠（可靠广场）</option>
                 </select>
               </div>
 
               <div>
                 <label className="block font-medium text-slate-700 mb-1">
-                  {editingSkill.skillType === 'mentor' ? '作者姓名' : '书名'}
+                  {editingSkill.skillType === 'mentor' ? '作者姓名' : editingSkill.skillType === 'reliable' ? '名称' : '书名'}
                 </label>
                 <input
                   type="text"
@@ -2467,7 +2511,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       : prev
                     );
                   }}
-                  placeholder={editingSkill.skillType === 'mentor' ? '如：孔子、王阳明' : '如：《黑天鹅》'}
+                  placeholder={editingSkill.skillType === 'mentor' ? '如：孔子、王阳明' : editingSkill.skillType === 'reliable' ? '如：可靠内容名称' : '如：《黑天鹅》'}
                   className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors"
                 />
               </div>
@@ -3108,6 +3152,83 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             </div>
             <button type="button" onClick={() => setCredential(null)} className="w-full py-2 bg-gray-900 text-white rounded-lg text-xs font-medium">我已安全保存</button>
+          </div>
+        </div>
+      )}
+
+      {/* USER FOLLOWS MODAL */}
+      {viewingFollowsUser && (
+        <div className="fixed inset-0 z-80 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-xl p-5 w-full max-w-lg shadow-xl border border-slate-200/90 text-left space-y-4 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between border-b pb-3 border-slate-100 shrink-0">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                  <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+                  用户关注列表
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-1 font-mono truncate">
+                  {viewingFollowsUser.phone || viewingFollowsUser.id} · 共 {userFollows.length} 项
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingFollowsUser(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto -mx-1 px-1">
+              {isUserFollowsLoading ? (
+                <div className="py-10 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  加载中…
+                </div>
+              ) : userFollows.length === 0 ? (
+                <div className="py-10 text-center text-xs text-slate-400">该用户还没有关注任何技能</div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {userFollows.map((item) => (
+                    <div key={item.id} className="py-2.5 flex items-center gap-3">
+                      <img src={assetSrc(item.coverUrl)} alt="" className="w-8 h-11 rounded object-cover bg-slate-100 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-xs font-medium text-slate-900 truncate">{item.title}</span>
+                          <span
+                            className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                              item.skillType === 'mentor'
+                                ? 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                                : item.skillType === 'reliable'
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
+                                  : 'bg-sky-50 text-sky-700 border border-sky-200/60'
+                            }`}
+                          >
+                            {item.skillType === 'mentor' ? '导师' : item.skillType === 'reliable' ? '可靠' : '书籍'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                          {item.author} · {item.category}
+                        </p>
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                        {new Date(item.followedAt).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100 shrink-0">
+              <button
+                type="button"
+                onClick={() => setViewingFollowsUser(null)}
+                className="px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 rounded-lg text-xs font-medium cursor-pointer transition-colors shadow-2xs"
+              >
+                关闭
+              </button>
+            </div>
           </div>
         </div>
       )}

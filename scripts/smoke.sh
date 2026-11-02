@@ -21,17 +21,8 @@ check "public questions endpoint removed" "404" "$(code -X POST "$BASE/api/skill
 check "admin entry reachable" "1" "$(code -L "$BASE/admin" | grep -Ec '^(200|302)$')"
 check "unknown API 404" "404" "$(code "$BASE/api/nonexistent")"
 if [ -n "${ADMIN_PHONE:-}" ] && [ -n "${ADMIN_PASSWORD:-}" ]; then
-  LOGIN=$(curl -s -c "$JAR" -b "$JAR" -X POST "$BASE/api/admin/login" -H "Origin: $ORIGIN" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"password\":\"$ADMIN_PASSWORD\",\"secondPassword\":\"${ADMIN_SECOND_PASSWORD:-}\"}")
-  if echo "$LOGIN" | grep -q 'mfaRequired\|mfaSetupRequired'; then
-    if [ -z "${ADMIN_TOTP_CODE:-}" ]; then
-      echo "  SKIP admin chain（服务端启用了动态验证码，需提供 ADMIN_TOTP_CODE）"
-    else
-      VERIFY=$(curl -s -c "$JAR" -b "$JAR" -X POST "$BASE/api/admin/mfa/verify" -H "Origin: $ORIGIN" -H 'Content-Type: application/json' -d "{\"code\":\"$ADMIN_TOTP_CODE\"}")
-      check "admin MFA login" "1" "$(echo "$VERIFY" | grep -c '\"role\":\"admin\"')"
-    fi
-  else
-    check "admin login" "1" "$(echo "$LOGIN" | grep -c '\"role\":\"admin\"')"
-  fi
+  LOGIN=$(curl -s -c "$JAR" -b "$JAR" -X POST "$BASE/api/admin/login" -H "Origin: $ORIGIN" -H 'Content-Type: application/json' -d "{\"phone\":\"$ADMIN_PHONE\",\"password\":\"$ADMIN_PASSWORD\"}")
+  check "admin login" "1" "$(echo "$LOGIN" | grep -c '\"role\":\"admin\"')"
   CSRF=$(csrf)
   if [ -z "$CSRF" ]; then
     echo "  SKIP admin chain（登录未成功，未取得 CSRF 令牌）"

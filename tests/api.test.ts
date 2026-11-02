@@ -1,7 +1,6 @@
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import Database from 'better-sqlite3';
-import { generateSync } from 'otplib';
 import fs from 'node:fs';
 import { createServer } from 'node:http';
 
@@ -11,7 +10,6 @@ let MAX_TAGS = 0;
 let createApp: any;
 let adminAgent: any;
 let adminCsrf = '';
-let adminTotpSecret = '';
 // 管理员两个 Cookie 的 Max-Age，在用例三建立管理员会话时采集。
 // 不另开一次登录来取：管理员鉴权端点是 10 次/分钟的限流，而整个测试文件共享同一个 IP。
 let adminSessionMaxAge = 0;
@@ -61,22 +59,19 @@ describe('commercial MVP API', () => {
     await request(app).get('/api/chat/sessions?userId=usr_0000000001').expect(401);
   });
 
-  it('supports admin MFA, user provisioning, forced password change and session isolation', async () => {
+  it('supports admin login, user provisioning, forced password change and session isolation', async () => {
     const admin = request.agent(app);
     const login = await admin.post('/api/admin/login').set('Origin', 'http://127.0.0.1:3000').send({ phone: '13800000000', password: 'AdminPass12345678!' }).expect(200);
     adminAgent = admin;
-    expect(login.body.mfaSetupRequired).toBe(true);
+    // 管理员登录只校验账号 + 密码；MFA / 二次口令链路已移除
+    expect(login.body.user.role).toBe('admin');
+    adminCsrf = cookieValue(login, 'book_answer_admin_csrf');
+    adminSessionMaxAge = cookieMaxAge(login, 'book_answer_admin_session');
+    adminCsrfMaxAge = cookieMaxAge(login, 'book_answer_admin_csrf');
+    expect(adminCsrf).not.toBe('');
+    await request(app).post('/api/admin/mfa/verify').set('Origin', 'http://127.0.0.1:3000').send({}).expect(404);
 
-    const setup = await admin.post('/api/admin/mfa/setup').set('Origin', 'http://127.0.0.1:3000').send({}).expect(200);
-    expect(setup.body.recoveryCodes).toHaveLength(8);
-    adminTotpSecret = setup.body.secret;
-    const code = generateSync({ secret: setup.body.secret });
-    const confirm = await admin.post('/api/admin/mfa/confirm').set('Origin', 'http://127.0.0.1:3000').send({ code }).expect(200);
-    expect(confirm.body.user.role).toBe('admin');
-    adminCsrf = cookieValue(confirm, 'book_answer_admin_csrf');
-    adminSessionMaxAge = cookieMaxAge(confirm, 'book_answer_admin_session');
-    adminCsrfMaxAge = cookieMaxAge(confirm, 'book_answer_admin_csrf');
-    expect(adminCsrf).not.toBe('');    const llmView = await admin.get('/api/admin/llm-config').set('Origin', 'http://127.0.0.1:3000').expect(200);
+    const llmView = await admin.get('/api/admin/llm-config').set('Origin', 'http://127.0.0.1:3000').expect(200);
     expect(llmView.body.llmConfig).not.toHaveProperty('apiKey');
 
     const created = await admin.post('/api/admin/users/create').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', adminCsrf).send({ phone: '13900000000', membershipTier: 'free_member' }).expect(200);
@@ -95,7 +90,7 @@ describe('commercial MVP API', () => {
     await user.get('/api/chat/sessions').expect(200);
   });
 
-  it('requires MFA and streams an authenticated chat through a mock LLM', async () => {
+  it('streams an authenticated chat through a mock LLM', async () => {
     let failNext = false;
     const mock = createServer((_req, res) => {
       if (failNext) {
@@ -115,9 +110,7 @@ describe('commercial MVP API', () => {
     try {
       const admin = request.agent(app);
       const login = await admin.post('/api/admin/login').set('Origin', 'http://127.0.0.1:3000').send({ phone: '13800000000', password: 'AdminPass12345678!' }).expect(200);
-      expect(login.body.mfaRequired).toBe(true);
-      const verify = await admin.post('/api/admin/mfa/verify').set('Origin', 'http://127.0.0.1:3000').send({ code: generateSync({ secret: adminTotpSecret }) }).expect(200);
-      const csrf = cookieValue(verify, 'book_answer_admin_csrf');
+      const csrf = cookieValue(login, 'book_answer_admin_csrf');
       const llmResponse = await admin.post('/api/admin/llm-config').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', csrf).send({
         apiKeyMode: 'replace',
         apiKey: 'sk-test-1234567890',
@@ -163,6 +156,10 @@ describe('commercial MVP API', () => {
 
     const csrf = cookieValue(changed, 'book_answer_user_csrf');
 
+    // 注销前先关注一个技能：账号删除后关注关系必须一并清除（不能留下孤儿行）
+    await agent.post('/api/follows').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', csrf).send({ skillId: 'skill-santi' }).expect(200);
+    expect(db.getUserFollows(created.body.user.id)).toHaveLength(1);
+
     // 未登录不能注销
     await request(app).post('/api/auth/delete-account').set('Origin', 'http://127.0.0.1:3000').send({ confirm: '我确认注销' }).expect(401);
 
@@ -174,8 +171,9 @@ describe('commercial MVP API', () => {
     // 三种语言的短语都接受，且忽略大小写（服务端与前端共用同一份定义）
     await agent.post('/api/auth/delete-account').set('Origin', 'http://127.0.0.1:3000').set('X-CSRF-Token', csrf).send({ confirm: 'Delete My Account' }).expect(200);
 
-    // 删号后账号不存在、原会话失效
+    // 删号后账号不存在、原会话失效、关注关系一并清除
     expect(db.getUserById(created.body.user.id)).toBeFalsy();
+    expect(db.getUserFollows(created.body.user.id)).toHaveLength(0);
     await agent.get('/api/auth/me').expect(401);
   });
 
@@ -270,5 +268,109 @@ describe('commercial MVP API', () => {
       }
     }
     expect(db.getTags()).toEqual(before);
+  });
+
+  it('requires login for follow endpoints', async () => {
+    await request(app).get('/api/follows').expect(401);
+    await request(app).post('/api/follows').set('Origin', 'http://127.0.0.1:3000').send({ skillId: 'skill-santi' }).expect(401);
+    await request(app).delete('/api/follows/skill-santi').set('Origin', 'http://127.0.0.1:3000').expect(401);
+  });
+
+  it('persists follows per user, keeps them idempotent and exposes them to admin only', async () => {
+    const follow = await userAgent.post('/api/follows')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', userCsrf)
+      .send({ skillId: 'skill-santi' })
+      .expect(200);
+    expect(follow.body.success).toBe(true);
+
+    const list = await userAgent.get('/api/follows').expect(200);
+    const followedIds = list.body.follows.map((skill: any) => skill.id);
+    expect(followedIds).toContain('skill-santi');
+    // 公开 DTO 约束同样适用于关注列表
+    expect(list.body.follows[0]).not.toHaveProperty('systemPrompt');
+    expect(typeof list.body.follows[0].followedAt).toBe('string');
+
+    // 重复关注必须幂等，不产生重复行
+    await userAgent.post('/api/follows')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', userCsrf)
+      .send({ skillId: 'skill-santi' })
+      .expect(200);
+    const listAgain = await userAgent.get('/api/follows').expect(200);
+    expect(listAgain.body.follows.filter((skill: any) => skill.id === 'skill-santi')).toHaveLength(1);
+
+    // 关注不存在的技能必须 404，且返回错误码供前端翻译
+    const missing = await userAgent.post('/api/follows')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', userCsrf)
+      .send({ skillId: 'skill-not-exist' })
+      .expect(404);
+    expect(missing.body.error).toBe('SKILL_NOT_FOUND');
+
+    // 后台可以查看该用户的关注列表与关注数
+    const me = await userAgent.get('/api/auth/me').expect(200);
+    const adminView = await adminAgent.get(`/api/admin/users/${me.body.user.id}/follows`).expect(200);
+    expect(adminView.body.follows.map((skill: any) => skill.id)).toContain('skill-santi');
+    const users = await adminAgent.get('/api/admin/users').expect(200);
+    const meRow = users.body.users.find((row: any) => row.id === me.body.user.id);
+    expect(meRow.followCount).toBeGreaterThanOrEqual(1);
+
+    // 普通用户不能访问后台关注接口
+    await userAgent.get(`/api/admin/users/${me.body.user.id}/follows`).expect(403);
+
+    // 取消关注后列表不再包含该技能；重复取消同样幂等
+    await userAgent.delete('/api/follows/skill-santi')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', userCsrf)
+      .expect(200);
+    await userAgent.delete('/api/follows/skill-santi')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', userCsrf)
+      .expect(200);
+    const afterUnfollow = await userAgent.get('/api/follows').expect(200);
+    expect(afterUnfollow.body.follows.map((skill: any) => skill.id)).not.toContain('skill-santi');
+  });
+
+  it('supports the reliable skill type and cascades follows when a skill is deleted', async () => {
+    const created = await adminAgent.post('/api/admin/skills')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', adminCsrf)
+      .send({
+        skill: {
+          title: '可靠测试内容',
+          author: '测试作者',
+          description: '用于验证可靠广场类型',
+          category: '',
+          tags: [],
+          systemPrompt: '这是用于集成测试的可靠内容提示词。',
+          skillType: 'reliable',
+        },
+      })
+      .expect(200);
+    const skillId = created.body.skill.id;
+    expect(created.body.skill.skillType).toBe('reliable');
+
+    const reliableList = await request(app).get('/api/skills?type=reliable').expect(200);
+    expect(reliableList.body.skills.map((skill: any) => skill.id)).toContain(skillId);
+    const bookList = await request(app).get('/api/skills?type=book').expect(200);
+    expect(bookList.body.skills.map((skill: any) => skill.id)).not.toContain(skillId);
+
+    // 关注该技能后由管理员删除：关注关系应随技能一起清理
+    await userAgent.post('/api/follows')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', userCsrf)
+      .send({ skillId })
+      .expect(200);
+    const beforeDelete = await userAgent.get('/api/follows').expect(200);
+    expect(beforeDelete.body.follows.map((skill: any) => skill.id)).toContain(skillId);
+
+    await adminAgent.delete(`/api/admin/skills/${skillId}`)
+      .set('Origin', 'http://127.0.0.1:3000')
+      .set('X-CSRF-Token', adminCsrf)
+      .expect(200);
+    const afterDelete = await userAgent.get('/api/follows').expect(200);
+    expect(afterDelete.body.follows.map((skill: any) => skill.id)).not.toContain(skillId);
+    await request(app).get(`/api/skills/${skillId}`).expect(404);
   });
 });

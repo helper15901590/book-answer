@@ -1,5 +1,5 @@
 import React from 'react';
-import { MessageSquare, Flame } from 'lucide-react';
+import { MessageSquare, Flame, Star } from 'lucide-react';
 import { Skill, UserProfile, cleanBookTitle, ALL_CATEGORIES } from '../types';
 import { useI18n, formatCompactCount } from '../i18n';
 import { assetSrc } from '../lib/apiFetch';
@@ -12,6 +12,8 @@ interface SkillCardProps {
   renamedCategoriesMap?: Record<string, string>;
   deletedCategoriesSet?: Set<string>;
   validCategories?: string[];
+  isFollowed?: boolean;
+  onToggleFollow?: (skill: Skill) => void;
   onSelectSkill: (skill: Skill) => void;
   onViewDetail?: (skill: Skill) => void;
 }
@@ -24,6 +26,8 @@ export const SkillCard: React.FC<SkillCardProps> = ({
   renamedCategoriesMap,
   deletedCategoriesSet,
   validCategories,
+  isFollowed = false,
+  onToggleFollow,
   onSelectSkill,
   onViewDetail,
 }) => {
@@ -126,19 +130,40 @@ export const SkillCard: React.FC<SkillCardProps> = ({
               </span>
             </div>
 
-            {/* Right-bottom corner: Chat Button */}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelectSkill(skill);
-              }}
-              className="px-1 py-1 text-xs font-semibold text-[#8c6227] hover:text-[#5c3e14] bg-transparent hover:bg-transparent rounded-lg transition-all duration-150 flex items-center gap-1 cursor-pointer shrink-0 active:scale-95 whitespace-nowrap group/btn hover:scale-105"
-              title={t('skillCard.enterChat')}
-            >
-              <MessageSquare className="w-3.5 h-3.5 transition-transform group-hover/btn:scale-110" />
-              <span className="group-hover/btn:underline underline-offset-2">{t('skillCard.chat')}</span>
-            </button>
+            {/* Right-bottom corner: Follow + Chat Buttons */}
+            <div className="flex items-center gap-1 shrink-0">
+              {onToggleFollow && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleFollow(skill);
+                  }}
+                  aria-pressed={isFollowed}
+                  title={t(isFollowed ? 'skillCard.unfollow' : 'skillCard.follow')}
+                  className={`px-1 py-1 text-[11px] font-semibold rounded-lg transition-all duration-150 flex items-center gap-0.5 cursor-pointer shrink-0 active:scale-95 whitespace-nowrap ${
+                    isFollowed ? 'text-amber-600 hover:text-amber-700' : 'text-gray-400 hover:text-amber-600'
+                  }`}
+                >
+                  <Star className={`w-3.5 h-3.5 ${isFollowed ? 'fill-amber-500 text-amber-500' : ''}`} />
+                  <span>{t(isFollowed ? 'skillCard.followed' : 'skillCard.follow')}</span>
+                </button>
+              )}
+
+              {/* Chat Button */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectSkill(skill);
+                }}
+                className="px-1 py-1 text-xs font-semibold text-[#8c6227] hover:text-[#5c3e14] bg-transparent hover:bg-transparent rounded-lg transition-all duration-150 flex items-center gap-1 cursor-pointer shrink-0 active:scale-95 whitespace-nowrap group/btn hover:scale-105"
+                title={t('skillCard.enterChat')}
+              >
+                <MessageSquare className="w-3.5 h-3.5 transition-transform group-hover/btn:scale-110" />
+                <span className="group-hover/btn:underline underline-offset-2">{t('skillCard.chat')}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>

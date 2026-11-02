@@ -44,7 +44,7 @@
 - 管理书籍、导师、标签、封面和系统提示词。
 - 配置 OpenAI 兼容的大模型接口和每日额度。
 - 查看统计、订单占位数据和审计记录。
-- 使用密码、第二重口令和 TOTP 动态验证码保护后台。
+- 使用管理员账号 + 密码和登录限流保护后台。
 
 需要先纠正一个直觉：这里所谓的“AI 导师”并不是本项目自己训练出来的大模型。项目负责账号、权限、技能提示词、聊天上下文、配额、流式转发和持久化；真正的文字生成由外部大模型服务完成。可以把项目理解成“大模型的业务外壳与安全网关”。
 
@@ -769,7 +769,7 @@ market / skill / session / message / stream / login
 | 文件 | 职责 |
 |---|---|
 | `LoginModal.tsx` | 登录、首次改密 |
-| `AdminGate.tsx` | 管理后台登录和 MFA |
+| `AdminGate.tsx` | 管理后台账号密码登录 |
 | `AdminPanel.tsx` | 后台用户、技能、配置和统计管理 |
 | `MarketSection.tsx` | 技能市场列表 |
 | `BookDetailModal.tsx` | 书籍详情 |
@@ -1218,16 +1218,15 @@ app.post('/api/auth/login', handler);
 | POST | `/api/chat/stream` | 调用模型并用 SSE 持续返回 |
 | POST | `/api/chat/send` | 一次返回完整回答的非流式备用接口 |
 
-### 管理员登录与 MFA
+### 管理员登录
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| POST | `/api/admin/login` | 管理员第一重登录 |
-| POST | `/api/admin/mfa/setup` | 生成 TOTP 密钥和恢复码 |
-| POST | `/api/admin/mfa/confirm` | 确认绑定 |
-| POST | `/api/admin/mfa/verify` | 日常 MFA 验证 |
+| POST | `/api/admin/login` | 管理员账号 + 密码登录 |
 | POST | `/api/admin/logout` | 管理员退出 |
 | GET | `/api/admin/me` | 当前管理员 |
+
+> 版本说明：早期版本还有 `mfa/setup`、`mfa/confirm`、`mfa/verify` 三个端点与可选的安全码；当前实现已移除管理员 MFA 与二次口令，登录只校验手机号 + 密码。
 
 ### 管理后台业务
 
@@ -1374,11 +1373,9 @@ JSON 返回浏览器
 | `PORT` | 后端监听端口 |
 | `DATA_DIR` | SQLite、上传素材、备份根目录 |
 | `APP_ORIGIN` | 正式访问来源，用于 Cookie 和 CSRF |
-| `APP_ENCRYPTION_KEY` | 加密 TOTP 密钥和 LLM API Key |
+| `APP_ENCRYPTION_KEY` | 加密 LLM API Key |
 | `ADMIN_PHONE` | 管理员登录账号 |
 | `ADMIN_PASSWORD` | 管理员登录密码 |
-| `ADMIN_MFA_ENABLED` | 是否启用 TOTP |
-| `ADMIN_SECOND_PASSWORD` | 可选的第二重安全码 |
 | `TRUST_PROXY` | 是否信任反向代理的客户端 IP 头 |
 | `ALLOW_INSECURE_HTTP` | 是否允许没有 HTTPS 的内测模式 |
 | `SENTRY_DSN` | Sentry 上报地址 |
@@ -1432,7 +1429,7 @@ password = "MySecret123"
 | 概念 | 英文 | 能否还原 | 本项目用途 |
 |---|---|---|---|
 | 编码 | Encoding，如 Base64 | 可以，只是换表示形式 | 传输二进制数据 |
-| 加密 | Encryption | 有密钥时可还原 | 保护 LLM API Key、TOTP secret |
+| 加密 | Encryption | 有密钥时可还原 | 保护 LLM API Key |
 | 哈希 | Hashing | 设计上不可逆 | 保存密码和令牌摘要 |
 
 **重要**：Base64 不是加密。它只是编码，任何人都能解码。
@@ -1587,7 +1584,7 @@ Session 的代价是每次请求可能查数据库；本项目的 SQLite 单机�
 - 用户登录、改密、管理员登录都有更严格限制。
 - `/assets` 单独限制，防止匿名资源被滥用。
 
-**为什么需要多层**：全局限流防止总体滥用，专项限流保护昂贵操作。聊天还会调用付费大模型，登录和 MFA 还涉及密码猜测。
+**为什么需要多层**：全局限流防止总体滥用，专项限流保护昂贵操作。聊天还会调用付费大模型，登录还涉及密码猜测。
 
 **限流键通常是 IP**。因此 `TRUST_PROXY` 必须与部署拓扑一致，否则：
 - 代理后不信任代理头，所有用户可能共用一个 IP 桶。
@@ -1610,6 +1607,8 @@ Session 的代价是每次请求可能查数据库；本项目的 SQLite 单机�
 **为什么开发环境要放宽 CSP**：Vite 开发时注入内联脚本和 WebSocket HMR。严格 CSP 会让开发页面白屏。生产构建没有这些内联需求，所以策略更严格。
 
 ## 4.11 TOTP、MFA 与恢复码
+
+> 版本说明：当前实现已移除管理员 MFA 与二次口令，登录只校验账号 + 密码。本节保留为概念科普，帮助理解 TOTP、MFA 与恢复码的原理，不代表现行登录流程。
 
 **TOTP**：Time-based One-Time Password，基于时间的一次性密码。
 
@@ -1653,7 +1652,7 @@ Session 的代价是每次请求可能查数据库；本项目的 SQLite 单机�
 | `crypto.randomInt` | 无偏随机整数，生成用户 ID 和临时密码 |
 | SHA-256 | 对高熵会话令牌建立数据库查找摘要 |
 | HMAC-SHA256 | 对恢复码做带密钥摘要 |
-| AES-256-GCM | 加密 LLM API Key 和 TOTP secret |
+| AES-256-GCM | 加密 LLM API Key |
 | bcrypt | 哈希用户和管理员密码 |
 
 **AES**：Advanced Encryption Standard，高级加密标准。
@@ -1967,7 +1966,7 @@ data/commercial.sqlite
 | 安全 | failed_login_attempts、locked_until、last_login_at |
 | 生命周期 | created_at、updated_at、deleted_at |
 
-管理员不在 users 表，而是由环境变量构建固定管理员身份。这样做简化了管理员账号管理，也意味着管理员密码和 MFA 安全性高度依赖环境变量及 `admin_security` 表。
+管理员不在 users 表，而是由环境变量构建固定管理员身份。这样做简化了管理员账号管理，也意味着管理员密码安全性高度依赖环境变量。
 
 ### `skills`
 
@@ -2034,20 +2033,12 @@ data/commercial.sqlite
 短期挑战：
 
 - 首次登录改密。
-- 管理员 MFA 设置。
-- 管理员 MFA 验证。
 
 特点：一次性、有期限、只保存 token 哈希。
 
-### `admin_security`
+### `admin_security`（历史）
 
-保存管理员 TOTP 和恢复码数据：
-
-- 正式加密 secret。
-- 是否启用。
-- 恢复码 HMAC 哈希。
-- 待确认的 pending secret 和恢复码。
-- `auth_version`。
+早期版本用于保存管理员 TOTP 与恢复码；当前版本已移除管理员 MFA，新库不再创建该表，旧库中的残留表可忽略。
 
 ### `quota_ledger`
 
@@ -3045,7 +3036,6 @@ openssl rand -base64 32
 `APP_ENCRYPTION_KEY` 必须是 32 字节，可用 base64 或 64 位 hex 表示。它用于 AES-256-GCM 加密：
 
 - LLM API Key。
-- TOTP secret。
 
 生产关键变量：
 
@@ -3108,7 +3098,7 @@ docker compose -f docker/compose.yaml logs -f app
 - `https://域名` 能打开。
 - `/api/health` 返回 ok。
 - `/admin` 能进入后台。
-- 管理员完成 TOTP。
+- 管理员使用账号 + 密码登录后台。
 - 冒烟脚本通过。
 - 备份可生成并校验。
 - 服务器重启后容器自动恢复。
@@ -3289,7 +3279,7 @@ NODE_ENV=development
 
 - SQLite WAL 引擎位置。
 - 监听端口。
-- 管理后台或 MFA 配置警告。
+- 管理后台或管理员配置警告。
 - HTTP 请求日志。
 
 若启动立刻退出，优先看：
@@ -3802,7 +3792,7 @@ Compose 设置了内存限制、Node 堆上限和文件描述符上限，目标�
 | SQLite 文件损坏 | 数据不可用 | 停止写，保留现场，用备份恢复 |
 | 磁盘写满 | 登录、日志、上传失败 | 清理日志/旧备份，扩容磁盘 |
 | API Key 泄露 | 被盗刷费用 | 服务商立即撤销并轮换 Key |
-| `APP_ENCRYPTION_KEY` 丢失 | TOTP/API Key 无法解密 | 从安全备份恢复密钥 |
+| `APP_ENCRYPTION_KEY` 丢失 | LLM API Key 无法解密 | 从安全备份恢复密钥 |
 | 证书续期失败 | HTTPS 告警或中断 | 看 Caddy 日志、DNS、80/443 |
 | 第三方模型故障 | AI 不可用 | 降级提示、切换兼容供应商 |
 | 误删用户 | 业务数据丢失 | 立即停止相关写入，从备份恢复/审计 |
@@ -4333,7 +4323,7 @@ Git 源码
 - 后端采用清晰分层的 Express。
 - 数据层在规模匹配时选择简单可靠的 SQLite。
 - AI 调用通过后端保护密钥、额度和上下文。
-- 安全覆盖 Session、CSRF、bcrypt、MFA、限流和 CSP。
+- 安全覆盖 Session、CSRF、bcrypt、限流和 CSP。
 - 部署采用 Docker Compose + Caddy，具备备份与恢复路径。
 - 测试、CI、日志和监控保证系统可验证、可观察。
 

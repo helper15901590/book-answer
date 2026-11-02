@@ -67,29 +67,7 @@ if (IS_PROD) {
   }
 }
 
-// 管理员登录动态验证码（TOTP）：默认开启。仅内测等受控环境可设为 0 关闭，
-// 关闭后管理员仅凭手机号 + 密码即可进入后台，失去第二重防护。
-export const ADMIN_MFA_ENABLED = process.env.ADMIN_MFA_ENABLED !== '0';
-if (!ADMIN_MFA_ENABLED) {
-  console.warn('⚠️ ADMIN_MFA_ENABLED=0：管理后台已关闭动态验证码，仅凭密码即可登录，请勿在此状态下长期对公网开放');
-}
-
-// 管理员第二重口令（安全码）：可选，无需任何 App。设置后登录需额外提供，
-// 留空则不做第二重校验。与动态验证码相互独立，同时启用时两重都需通过。
-export const ADMIN_SECOND_PASSWORD = (process.env.ADMIN_SECOND_PASSWORD || '').trim();
-if (IS_PROD && ADMIN_SECOND_PASSWORD) {
-  if (ADMIN_SECOND_PASSWORD.length < 8) {
-    console.error('FATAL: ADMIN_SECOND_PASSWORD 至少需要 8 个字符');
-    process.exit(1);
-  }
-  if (ADMIN_SECOND_PASSWORD === ADMIN_PASSWORD
-    || ADMIN_PASSWORD.includes(ADMIN_SECOND_PASSWORD)
-    || ADMIN_SECOND_PASSWORD.includes(ADMIN_PASSWORD)) {
-    console.error('FATAL: ADMIN_SECOND_PASSWORD 与 ADMIN_PASSWORD 不能相同或互相包含——否则拿到密码即可推出安全码，第二重验证形同虚设');
-    process.exit(1);
-  }
-}
-
+// 管理员账号不入库，凭据完全来自环境变量；登录仅校验手机号 + 密码。
 export const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 // 无 HTTPS 部署开关：内测阶段用「公网 IP + HTTP」直连时设为 1。
@@ -115,7 +93,6 @@ export const USER_SESSION_COOKIE = 'book_answer_user_session';
 export const USER_CSRF_COOKIE = 'book_answer_user_csrf';
 export const ADMIN_SESSION_COOKIE = 'book_answer_admin_session';
 export const ADMIN_CSRF_COOKIE = 'book_answer_admin_csrf';
-export const ADMIN_CHALLENGE_COOKIE = 'book_answer_admin_challenge';
 export const PASSWORD_CHANGE_COOKIE = 'book_answer_password_change';
 export const USER_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;

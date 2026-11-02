@@ -98,19 +98,14 @@ docker compose --env-file .env -f docker/compose.yaml up -d --build
 
 **切换到 HTTPS 时**：配置域名并解析 → 将 `APP_ORIGIN` 改为 `https://域名`、`BIND_ADDRESS` 改回 `127.0.0.1`、`TRUST_PROXY` 设为 `1`、删除或置 `ALLOW_INSECURE_HTTP=0` → 准备 `docker/Caddyfile` 后按 §4 用 `--profile https` 重新启动。切换后所有用户需要重新登录。
 
-## 5. 首次管理员登录
+## 5. 管理员登录
 
 1. 打开 `https://域名/admin`。
-2. 输入 `ADMIN_PHONE` 和 `ADMIN_PASSWORD`。
-3. 系统要求绑定 TOTP，显示 Base32 密钥和 8 个恢复码。
-4. 恢复码仅显示一次，必须离线保存。
-5. 输入认证器动态验证码完成绑定，后续登录必须提供 TOTP 或一次性恢复码。
+2. 输入 `ADMIN_PHONE` 和 `ADMIN_PASSWORD` 即可登录。
 
-管理员会话固定 8 小时，不滚动续期。修改环境变量中的管理员密码或重置 MFA 后，已有管理员会话失效。
+管理员账号不入库，凭据完全来自环境变量；生产环境要求密码至少 16 位且同时包含字母和数字。管理员会话固定 8 小时，不滚动续期；修改环境变量中的管理员密码后，已有管理员会话自动失效。
 
-**不想使用认证器 App 时**：在 `.env` 中设置 `ADMIN_SECOND_PASSWORD`（至少 8 位、需与管理员密码不同）并把 `ADMIN_MFA_ENABLED` 设为 `0`，登录时额外填写这个安全码即可，全程无需任何 App。（两者同时启用时两重都需通过，一般二选一即可。）
-
-**若两者都未配置**，管理员账号就只剩单重密码防护——而管理员可重置任意用户密码、查看全部手机号、修改 LLM 接口地址，一旦泄露等同于整个系统失守。因此正式对外前，务必启用动态验证码，或至少配置一个安全码。
+管理员可重置任意用户密码、查看全部手机号、修改 LLM 接口地址，请妥善保管管理员密码，不要与其他站点复用。
 
 ## 6. 用户账号
 
@@ -137,7 +132,7 @@ CONFIRM_ACCOUNT_RESET=RESET_ACCOUNTS npm run db:reset-accounts
 ## 8. 冒烟和容量验证
 
 ```bash
-BASE_URL=http://公网IP:3000 ADMIN_PHONE=管理员手机号 ADMIN_PASSWORD=管理员密码 ADMIN_SECOND_PASSWORD=安全码 bash scripts/smoke.sh
+BASE_URL=http://公网IP:3000 ADMIN_PHONE=管理员手机号 ADMIN_PASSWORD=管理员密码 bash scripts/smoke.sh
 BASE_URL=http://公网IP:3000/api/health CONNECTIONS=50 DURATION=30 npm run load:test
 ```
 
@@ -149,10 +144,10 @@ BASE_URL=http://公网IP:3000/api/health CONNECTIONS=50 DURATION=30 npm run load
 
   ```bash
   set -a && . ./.env && set +a
-  BASE_URL=http://127.0.0.1:3000 ORIGIN="$APP_ORIGIN" ADMIN_TOTP_CODE=当前6位码 bash scripts/smoke.sh
+  BASE_URL=http://127.0.0.1:3000 ORIGIN="$APP_ORIGIN" bash scripts/smoke.sh
   ```
 
-已启用动态验证码时再加 `ADMIN_TOTP_CODE=认证器当前 6 位码`。走 HTTPS 时把 `http://公网IP:3000` 换成 `https://域名`。
+走 HTTPS 时把 `http://公网IP:3000` 换成 `https://域名`。
 
 容量目标为 500 DAU、50 个并发登录用户、10 条并发 SSE。SSE 成本测试应使用模拟上游，禁止直接消耗真实模型预算。
 
@@ -190,7 +185,7 @@ docker compose -f docker/compose.yaml config
 - 未登录访问聊天、会话 API 返回 401
 - 公开技能接口不含 `systemPrompt`
 - 用户无法读取、续写或删除他人会话
-- 管理员必须完成 TOTP，恢复码只能使用一次
+- 管理员登录仅校验账号 + 密码，修改管理员密码后旧会话失效
 - 改密或禁用后旧会话立即失效
 - LLM 上游失败时配额自动回退
 - 健康检查包含数据库连通性

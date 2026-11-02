@@ -43,7 +43,15 @@ export interface UserProfile {
   deletedAt?: string;
 }
 
-export type SkillType = 'book' | 'mentor';
+export type SkillType = 'book' | 'mentor' | 'reliable';
+
+// 技能类型全集：新增类型时，所有按类型分支的展示逻辑（欢迎语、作者行、后台类型徽标等）
+// 都应改为引用这里，而不是散落的二元三元表达式。
+export const SKILL_TYPES = ['book', 'mentor', 'reliable'] as const;
+
+export function isSkillType(value: unknown): value is SkillType {
+  return typeof value === 'string' && (SKILL_TYPES as readonly string[]).includes(value);
+}
 
 export interface Skill {
   id: string;
@@ -76,6 +84,9 @@ export type PublicSkill = Pick<
   | 'sampleQuestions'
   | 'skillType'
 >;
+
+// 关注列表 DTO：公开技能字段 + 关注时间（服务端联表返回技能的最新公开信息）
+export type FollowedSkill = PublicSkill & { followedAt: string };
 
 export interface ChatMessage {
   id: string;
@@ -143,17 +154,6 @@ export interface AuthSessionRecord {
   revokedAt?: string;
   ip?: string;
   userAgent?: string;
-}
-
-export interface AdminSecurityRecord {
-  id: string;
-  totpSecretEnc?: string;
-  totpEnabled: boolean;
-  recoveryCodeHashes: string[];
-  pendingSecretEnc?: string;
-  pendingRecoveryHashes: string[];
-  authVersion?: string;
-  updatedAt: string;
 }
 export type OrderPlanType = 'monthly' | 'quarterly' | 'yearly';
 

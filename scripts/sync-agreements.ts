@@ -9,7 +9,7 @@ import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY } from '../src/data/init
 
 // 确认变量必须在 import db 之前检查：server/db.ts 在模块求值时就执行 new Database()，
 // 会建目录、建表、跑迁移并写种子数据。若把 import 放在前面，操作员只是想看一眼用法提示，
-// 也已经对 DATA_DIR 指向的库动过手了。同目录的 reset-accounts / reset-admin-mfa 用的是同样写法。
+// 也已经对 DATA_DIR 指向的库动过手了。同目录的 reset-accounts 用的是同样写法。
 if (process.env.CONFIRM_AGREEMENT_SYNC !== 'SYNC') {
   console.error('本脚本会用代码中的版本覆盖数据库里的协议正文。');
   console.error('⚠️  若你曾在后台「协议」页手动改过正文，那些改动会被覆盖。');

@@ -3,7 +3,6 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {
-  AdminSecurityRecord,
   AuthSessionRecord,
   ChatSession,
   LLMConfig,
@@ -12,6 +11,7 @@ import {
   Skill,
   UserProfile,
   getEffectiveMembershipTier,
+  isSkillType,
   membershipExpiryAfterRenewal,
   tierDailyLimit,
 } from '../src/types.js';
@@ -306,6 +306,15 @@ export class CommercialSQLDatabase {
         updated_at TEXT DEFAULT (datetime('now')),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       );
+      -- 用户关注关系：复合主键保证幂等，双外键让删除用户/技能时自动级联清理。
+      CREATE TABLE IF NOT EXISTS user_follows (
+        user_id TEXT NOT NULL,
+        skill_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, skill_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS orders (
         id TEXT PRIMARY KEY,
         trade_no TEXT UNIQUE NOT NULL,
@@ -351,16 +360,6 @@ export class CommercialSQLDatabase {
         used_at TEXT,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS admin_security (
-        id TEXT PRIMARY KEY,
-        totp_secret_enc TEXT,
-        totp_enabled INTEGER NOT NULL DEFAULT 0,
-        recovery_code_hashes TEXT NOT NULL DEFAULT '[]',
-        pending_secret_enc TEXT,
-        pending_recovery_hashes TEXT NOT NULL DEFAULT '[]',
-        auth_version TEXT,
-        updated_at TEXT NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS quota_ledger (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -394,6 +393,8 @@ export class CommercialSQLDatabase {
       CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
       CREATE INDEX IF NOT EXISTS idx_skills_search ON skills(search_count DESC);
       CREATE INDEX IF NOT EXISTS idx_sessions_user ON chat_sessions(user_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_follows_user ON user_follows(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_follows_skill ON user_follows(skill_id);
       CREATE INDEX IF NOT EXISTS idx_auth_sessions_subject ON auth_sessions(subject_type, subject_id);
       CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_auth_challenges_expiry ON auth_challenges(expires_at);
@@ -587,6 +588,7 @@ export class CommercialSQLDatabase {
     if (!this.db) return;
     const tx = this.db.transaction(() => {
       this.db!.prepare('DELETE FROM chat_sessions').run();
+      this.db!.prepare('DELETE FROM user_follows').run();
       this.db!.prepare('DELETE FROM auth_sessions').run();
       this.db!.prepare('DELETE FROM auth_challenges').run();
       this.db!.prepare('DELETE FROM quota_ledger').run();
@@ -608,6 +610,7 @@ export class CommercialSQLDatabase {
     if (!this.db) return false;
     const tx = this.db.transaction(() => {
       this.db!.prepare('DELETE FROM chat_sessions WHERE user_id = ?').run(userId);
+      this.db!.prepare('DELETE FROM user_follows WHERE user_id = ?').run(userId);
       this.db!.prepare('DELETE FROM auth_sessions WHERE subject_type = ? AND subject_id = ?').run('user', userId);
       // 配额账本与改密凭证没有外键约束，不显式清理会残留孤儿行
       this.db!.prepare('DELETE FROM quota_ledger WHERE user_id = ?').run(userId);
@@ -672,7 +675,7 @@ export class CommercialSQLDatabase {
       sampleQuestions: typeof obj.sample_questions === 'string' ? JSON.parse(obj.sample_questions || '[]') : obj.sample_questions,
       chatCount: obj.chat_count,
       searchCount: obj.search_count,
-      skillType: obj.skill_type === 'mentor' ? 'mentor' : 'book',
+      skillType: isSkillType(obj.skill_type) ? obj.skill_type : 'book',
     };
   }
 
@@ -719,7 +722,43 @@ export class CommercialSQLDatabase {
 
   public deleteSkill(id: string): boolean {
     if (!this.db) return false;
-    return this.db.prepare('DELETE FROM skills WHERE id = ?').run(id).changes > 0;
+    // 关注关系与技能删除必须同事务：否则技能已删、关注行还在，关注列表联表查不到行，
+    // 用户会看到一条永远无法取消的「幽灵关注」。
+    const tx = this.db.transaction(() => {
+      this.db!.prepare('DELETE FROM user_follows WHERE skill_id = ?').run(id);
+      return this.db!.prepare('DELETE FROM skills WHERE id = ?').run(id).changes > 0;
+    });
+    return tx();
+  }
+
+  public followSkill(userId: string, skillId: string): void {
+    this.db?.prepare('INSERT OR IGNORE INTO user_follows (user_id, skill_id, created_at) VALUES (?, ?, ?)')
+      .run(userId, skillId, new Date().toISOString());
+  }
+
+  public unfollowSkill(userId: string, skillId: string): boolean {
+    if (!this.db) return false;
+    return this.db.prepare('DELETE FROM user_follows WHERE user_id = ? AND skill_id = ?').run(userId, skillId).changes > 0;
+  }
+
+  // 关注列表联表取技能的最新字段：技能被编辑后，列表不能继续展示关注时的旧快照。
+  public getUserFollows(userId: string): { skill: Skill; followedAt: string }[] {
+    if (!this.db) return [];
+    const rows = this.db.prepare(
+      `SELECT s.*, f.created_at AS followed_at
+       FROM user_follows f
+       JOIN skills s ON s.id = f.skill_id
+       WHERE f.user_id = ?
+       ORDER BY f.created_at DESC`
+    ).all(userId) as any[];
+    return rows.map((row) => ({ skill: this.mapSkillRow(row), followedAt: row.followed_at }));
+  }
+
+  // 后台用户列表的关注数用一次 GROUP BY 取回，避免逐个用户查询造成 N+1。
+  public getUserFollowCounts(): Map<string, number> {
+    if (!this.db) return new Map();
+    const rows = this.db.prepare('SELECT user_id, COUNT(*) AS count FROM user_follows GROUP BY user_id').all() as any[];
+    return new Map(rows.map((row) => [row.user_id, Number(row.count)]));
   }
 
   public getTags(): string[] {
@@ -916,10 +955,6 @@ export class CommercialSQLDatabase {
     this.db?.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE subject_type = ? AND subject_id = ?').run(new Date().toISOString(), 'user', userId);
   }
 
-  public revokeAdminSessions(): void {
-    this.db?.prepare('UPDATE auth_sessions SET revoked_at = ? WHERE subject_type = ?').run(new Date().toISOString(), 'admin');
-  }
-
   public deleteExpiredAuthSessions(): void {
     if (!this.db) return;
     const now = new Date().toISOString();
@@ -962,32 +997,6 @@ export class CommercialSQLDatabase {
 
   public markAuthChallengeUsed(id: string): void {
     this.db?.prepare('UPDATE auth_challenges SET used_at = ? WHERE id = ?').run(new Date().toISOString(), id);
-  }
-
-  public getAdminSecurity(): AdminSecurityRecord | undefined {
-    if (!this.db) return undefined;
-    const row = this.db.prepare("SELECT * FROM admin_security WHERE id = 'primary'").get() as any;
-    if (!row) return undefined;
-    return {
-      id: row.id,
-      totpSecretEnc: row.totp_secret_enc || undefined,
-      totpEnabled: Boolean(row.totp_enabled),
-      recoveryCodeHashes: JSON.parse(row.recovery_code_hashes || '[]'),
-      pendingSecretEnc: row.pending_secret_enc || undefined,
-      pendingRecoveryHashes: JSON.parse(row.pending_recovery_hashes || '[]'),
-      authVersion: row.auth_version || undefined,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  public saveAdminSecurity(record: AdminSecurityRecord): void {
-    this.db?.prepare(
-      `INSERT INTO admin_security (id, totp_secret_enc, totp_enabled, recovery_code_hashes, pending_secret_enc, pending_recovery_hashes, auth_version, updated_at)
-       VALUES ('primary', ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET totp_secret_enc=excluded.totp_secret_enc, totp_enabled=excluded.totp_enabled,
-       recovery_code_hashes=excluded.recovery_code_hashes, pending_secret_enc=excluded.pending_secret_enc,
-       pending_recovery_hashes=excluded.pending_recovery_hashes, auth_version=excluded.auth_version, updated_at=excluded.updated_at`
-    ).run(record.totpSecretEnc || null, record.totpEnabled ? 1 : 0, JSON.stringify(record.recoveryCodeHashes || []), record.pendingSecretEnc || null, JSON.stringify(record.pendingRecoveryHashes || []), record.authVersion || null, record.updatedAt);
   }
 
   public audit(entry: { actorType: string; actorId?: string; action: string; targetType?: string; targetId?: string; metadata?: Record<string, unknown>; ip?: string; userAgent?: string }): void {
