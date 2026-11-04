@@ -124,6 +124,23 @@ export interface LLMConfig {
   dailyLimits?: DailyLimitsConfig;
   membershipPlans?: MembershipPlanConfig;
   agreements?: LegalAgreements;
+  // 公开配置专用：语音对话是否已启用且配置齐备（Key 永不外传，只下发这个布尔值）
+  voiceModeEnabled?: boolean;
+}
+
+// 语音合成（TTS）配置：存 system_config 的 tts_config 键，apiKey 加密落库。
+// provider 决定走哪条通道：cosyvoice = HTTP 文本合成；qwen-omni = Realtime WebSocket（复刻音色）。
+export type TTSProvider = 'cosyvoice' | 'qwen-omni';
+
+export interface TTSConfig {
+  enabled: boolean;
+  provider: TTSProvider;
+  apiBaseUrl: string;
+  wsUrl: string;
+  model: string;
+  voice: string;
+  apiKey?: string;
+  apiKeyConfigured?: boolean;
 }
 
 export interface AuthPolicy {

@@ -15,12 +15,13 @@ import {
 import { apiFetch, tryLogout } from '../lib/apiFetch';
 import { copyText } from '../lib/clipboard';
 import { useI18n, membershipTierKey, formatBookTitleByLocale, serverMessage } from '../i18n';
-import { MembershipModal } from './MembershipModal';
 import { MarkdownMessage } from './MarkdownMessage';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { PlazaView } from './PlazaView';
 import { FollowListView } from './FollowListView';
+import { FaceToFaceView } from './FaceToFaceView';
 import { usePlazaController } from '../lib/usePlazaController';
+import { useVoicePlayback } from '../lib/useVoicePlayback';
 import {
   Send,
   Book,
@@ -36,10 +37,10 @@ import {
   Brain,
   Clock,
   User,
-  Crown,
   UserX,
   ShieldCheck,
   Star,
+  MessageSquare,
 } from 'lucide-react';
 
 interface AiStudioWorkspaceProps {
@@ -87,6 +88,15 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   // 'reliable' (reliable grid) or 'follows' (followed skills grid)
   const [mainView, setMainView] = useState<'chat' | 'market' | 'mentor' | 'reliable' | 'follows'>('market');
 
+  // 聊天呈现方式：书信 / 面对面。二者共用同一会话与消息流，只是视图不同。
+  const [chatMode, setChatMode] = useState<'letter' | 'face'>('letter');
+  const voiceModeAvailable = Boolean(llmConfig.voiceModeEnabled);
+  // SSE 回调里需要读取最新模式：中途退出面对面后停止继续喂语音，但不打断文字生成
+  const chatModeRef = useRef<'letter' | 'face'>(chatMode);
+  useEffect(() => {
+    chatModeRef.current = chatMode;
+  }, [chatMode]);
+
   // Chat Input Drafts per skill/book to prevent text leakage across different book pages
   const [inputDrafts, setInputDrafts] = useState<Record<string, string>>({});
   const [isGenerating, setIsGenerating] = useState(false);
@@ -97,16 +107,42 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
-  const [isMembershipModalOpen, setIsMembershipModalOpen] = useState(false);
   const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [deletingSession, setDeletingSession] = useState<ChatSession | null>(null);
+  const [isClearSessionsOpen, setIsClearSessionsOpen] = useState(false);
   const [toastInfo, setToastInfo] = useState<{ message: string; type?: 'info' | 'warning' | 'success' } | null>(null);
 
   const showToast = React.useCallback((message: string, type: 'info' | 'warning' | 'success' = 'info') => {
     setToastInfo({ message, type });
   }, []);
+
+  // 语音播放队列：SSE 增量在 handleSendMessage 中喂入；错误每轮只提示一次。
+  const voicePlayback = useVoicePlayback({
+    onError: () => showToast(t('workspace.voiceUnavailable'), 'warning'),
+  });
+
+  // 后台关闭语音开关后立即回到文字模式，并停止正在播放的语音
+  useEffect(() => {
+    if (!voiceModeAvailable && chatMode === 'face') {
+      setChatMode('letter');
+      voicePlayback.stop();
+    }
+  }, [voiceModeAvailable, chatMode]);
+
+  // 离开聊天视图或登出时关闭面对面覆盖层，避免舞台悬空
+  useEffect(() => {
+    if (!user?.id || mainView !== 'chat') {
+      setChatMode('letter');
+      voicePlayback.stop();
+    }
+  }, [user?.id, mainView]);
+
+  // 切换会话或离开聊天视图时停止语音，避免旧音频串播到新页面
+  useEffect(() => {
+    voicePlayback.stop();
+  }, [activeSessionId, mainView]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -371,9 +407,29 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     });
   };
 
+  // 清空对话列表：一次性删除当前用户的全部会话与消息记录。
+  // 请求失败时保留本地列表，避免界面先清空、服务端却仍有数据。
+  const handleClearSessions = async () => {
+    try {
+      const res = await apiFetch('/api/chat/sessions', { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      cancelOngoingGeneration();
+      voicePlayback.stop();
+      setSessions([]);
+      setActiveSessionId(null);
+      setChatMode('letter');
+      setMainView('market');
+      setIsClearSessionsOpen(false);
+    } catch (err) {
+      console.warn('Clear sessions error:', err);
+      showToast(t('workspace.clearSessionsFailed'), 'warning');
+    }
+  };
+
   // Handle "新建对话" button click
   const handleCreateNewChat = () => {
     if (!user) { onOpenLogin(); return; }
+    voicePlayback.stop();
     const currentSkillToUse = activeSkill || skills[0];
     const initialQuestions = currentSkillToUse.sampleQuestions && currentSkillToUse.sampleQuestions.length > 0
       ? currentSkillToUse.sampleQuestions
@@ -406,6 +462,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
   // Handle selecting a book from Market
   const handleSelectBookFromMarket = (skill: Skill) => {
+    voicePlayback.stop();
     if (setSkills) {
       setSkills((prevSkills) =>
         prevSkills.map((s) =>
@@ -588,6 +645,11 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
 
     if (!checkQuotaAndCanProceed()) return;
 
+    // 面对面模式：本回复在流式生成过程中按句送往 TTS 并依次播放；
+    // 请求发出后再切换模式不影响本轮（模式在发送时确定）。
+    const speakReply = chatMode === 'face' && voiceModeAvailable;
+    if (speakReply) voicePlayback.startStream();
+
     const nowFormatted = new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
 
     const userMsg: ChatMessage = {
@@ -682,6 +744,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
             if (data.delta) {
               accumulatedText += data.delta;
               setCurrentStreamingText(accumulatedText);
+              if (speakReply && chatModeRef.current === 'face') voicePlayback.pushStream(accumulatedText);
             }
             if (data.error) {
               // SSE 错误帧回传的是错误码，需按当前语言翻译后再展示
@@ -702,7 +765,10 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         }
       }
 
-      if (abortController.signal.aborted) return;
+      if (abortController.signal.aborted) {
+        if (speakReply) voicePlayback.stop();
+        return;
+      }
 
       // 服务端明确报错（上游 LLM 不可用等）：走统一失败路径
       if (streamError) throw new Error(streamError);
@@ -725,6 +791,9 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         thinkingTime: finalThinkingTime,
       };
 
+      // 把最后未以句末标点结尾的尾巴也送去合成（前面的句子已在流式过程中入队）
+      if (speakReply && chatModeRef.current === 'face') voicePlayback.endStream(accumulatedText || aiMsg.content);
+
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id === targetSessionId) {
@@ -739,6 +808,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     } catch (err: any) {
       if (onRefreshUser) onRefreshUser();
       if (err?.name === 'AbortError' || abortController.signal.aborted) {
+        if (speakReply) voicePlayback.stop();
         return;
       }
       // 非用户主动停止的失败：保持服务端配额账本为准
@@ -905,26 +975,13 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                         <span>{t('workspace.login')}</span>
                       </button>
                     ) : (
-                      <>
-                        {/* 会员订阅入口（开通功能暂未开放，窗口内按钮禁用） */}
-                        <button
-                          onClick={() => {
-                            setIsUserMenuOpen(false);
-                            setIsMembershipModalOpen(true);
-                          }}
-                          className="w-full py-2 bg-[#f4efe6] hover:bg-[#eae1d0] text-[#2c221e] border border-[#ded3be] rounded-xl text-xs font-bold text-center transition-all cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
-                        >
-                          <Crown className="w-3.5 h-3.5 text-[#8c6227]" />
-                          {t('workspace.membershipEntry')}
-                        </button>
-                        <button
-                          onClick={handleLogout}
-                          className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200 flex items-center justify-center gap-1.5"
-                        >
-                          <LogOut className="w-3.5 h-3.5" />
-                          {t('workspace.logout')}
-                        </button>
-                      </>
+                      <button
+                        onClick={handleLogout}
+                        className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-900 rounded-xl text-xs font-bold text-center transition-all cursor-pointer border border-gray-200 flex items-center justify-center gap-1.5"
+                      >
+                        <LogOut className="w-3.5 h-3.5" />
+                        {t('workspace.logout')}
+                      </button>
                     )}
                   </div>
                 </div>
@@ -941,6 +998,22 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         {/* ========================================================================= */}
         <aside className="w-64 sm:w-72 bg-gray-50 flex flex-col justify-between shrink-0 h-full relative z-20 border-r border-gray-200">
           <div className="p-3 space-y-2">
+            <button
+              onClick={() => setMainView('reliable')}
+              className={`w-full py-3 px-3.5 rounded-xl font-semibold text-xs transition-all flex items-center justify-between cursor-pointer border ${
+                mainView === 'reliable'
+                  ? 'bg-[#f4efe6] text-[#2c221e] border-[#e2d8c3] font-bold shadow-2xs'
+                  : 'bg-white hover:bg-gray-100 text-gray-900 shadow-2xs border-gray-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-gray-700" />
+                <span>{t('workspace.reliablePlaza')}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
+              </div>
+            </button>
             <button
               onClick={() => setMainView('market')}
               className={`w-full py-3 px-3.5 rounded-xl font-semibold text-xs transition-all flex items-center justify-between cursor-pointer border ${
@@ -968,22 +1041,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
               <div className="flex items-center gap-2">
                 <MentorPlazaIcon className="w-4 h-4 text-gray-700" />
                 <span>{t('workspace.mentorPlaza')}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
-              </div>
-            </button>
-            <button
-              onClick={() => setMainView('reliable')}
-              className={`w-full py-3 px-3.5 rounded-xl font-semibold text-xs transition-all flex items-center justify-between cursor-pointer border ${
-                mainView === 'reliable'
-                  ? 'bg-[#f4efe6] text-[#2c221e] border-[#e2d8c3] font-bold shadow-2xs'
-                  : 'bg-white hover:bg-gray-100 text-gray-900 shadow-2xs border-gray-200'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-gray-700" />
-                <span>{t('workspace.reliablePlaza')}</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <ChevronRight className="w-3.5 h-3.5 opacity-70 text-gray-400" />
@@ -1021,7 +1078,20 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
           <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
             <div className="px-2 py-1 text-[11px] font-mono font-semibold text-gray-400 uppercase tracking-wider flex items-center justify-between">
               <span>{t('workspace.sessionList')}</span>
-              <span className="text-[11px]">{sessions.length}</span>
+              <div className="flex items-center gap-1">
+                {sessions.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setIsClearSessionsOpen(true)}
+                    title={t('workspace.clearSessions')}
+                    aria-label={t('workspace.clearSessions')}
+                    className="p-1 rounded-md text-gray-400 hover:text-rose-500 hover:bg-gray-200/70 transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
+                <span className="text-[11px]">{sessions.length}</span>
+              </div>
             </div>
 
             {sessions.length === 0 ? (
@@ -1175,7 +1245,38 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
             <div className="flex-1 flex flex-col h-full overflow-hidden relative bg-white">
               {/* Top Header Bar in Chat View */}
               <div className="h-12 px-4 sm:px-6 flex items-center justify-between bg-white border-b border-gray-100 shrink-0 z-10">
-                <div className="flex items-center gap-2.5 min-w-0" />
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {/* 书信 / 面对面切换：共用同一会话，面对面入口仅在后台语音配置可用时显示 */}
+                  <div className="flex items-center gap-0.5 bg-gray-100 p-0.5 rounded-full">
+                    <button
+                      onClick={() => {
+                        setChatMode('letter');
+                        voicePlayback.stop();
+                      }}
+                      className={`px-3 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
+                        chatMode === 'letter'
+                          ? 'bg-white text-gray-900 shadow-2xs'
+                          : 'text-gray-500 hover:text-gray-800'
+                      }`}
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>{t('workspace.textChatMode')}</span>
+                    </button>
+                    {voiceModeAvailable && (
+                      <button
+                        onClick={() => setChatMode('face')}
+                        className={`px-3 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
+                          chatMode === 'face'
+                            ? 'bg-white text-gray-900 shadow-2xs'
+                            : 'text-gray-500 hover:text-gray-800'
+                        }`}
+                      >
+                        <User className="w-3.5 h-3.5" />
+                        <span>{t('workspace.voiceChatMode')}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
 
                 <button
                   onClick={handleCreateNewChat}
@@ -1371,6 +1472,28 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         </main>
       </div>
 
+      {/* 面对面全屏界面：覆盖整个应用；「书信」退出并回到文字聊天页 */}
+      {chatMode === 'face' && voiceModeAvailable && user && (
+        <FaceToFaceView
+          session={activeSession}
+          inputText={inputText}
+          onInputChange={setInputText}
+          onSend={handleSendMessage}
+          isGenerating={isGenerating}
+          generatingHere={activeSession?.id === generatingSessionId}
+          currentStreamingText={currentStreamingText}
+          speaking={voicePlayback.isSpeaking || voicePlayback.isPreparing}
+          currentSpeechText={voicePlayback.currentSpeechText}
+          isRevealing={voicePlayback.isRevealing}
+          onReplay={(text) => voicePlayback.speak(text)}
+          onExit={() => {
+            setChatMode('letter');
+            voicePlayback.stop();
+          }}
+          onNotify={showToast}
+        />
+      )}
+
       {/* 注销账号确认弹窗：必须输入完整短语才能提交，避免误触造成的不可恢复删除 */}
       {isDeleteAccountOpen && (
         <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1406,6 +1529,32 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         </div>
       )}
 
+      {/* 清空对话列表确认弹窗：一次性删除全部会话与消息，不可撤销 */}
+      {isClearSessionsOpen && (
+        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-xl border border-gray-200 p-5 space-y-4 text-left">
+            <h3 className="text-sm font-serif font-bold text-gray-900">{t('workspace.clearSessionsTitle')}</h3>
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {t('workspace.clearSessionsBody', { count: sessions.length })}
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                onClick={() => setIsClearSessionsOpen(false)}
+                className="px-3.5 py-1.5 rounded-xl text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors cursor-pointer"
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                onClick={handleClearSessions}
+                className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 transition-colors cursor-pointer"
+              >
+                {t('workspace.clearSessionsConfirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Delete Confirmation Modal */}
       {deletingSession && (
         <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1433,15 +1582,6 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
             </div>
           </div>
         </div>
-      )}
-
-      {/* 会员订阅窗口（禁用态：仅浏览套餐，开通按钮置灰） */}
-      {isMembershipModalOpen && (
-        <MembershipModal
-          llmConfig={llmConfig}
-          currentTier={effectiveTier}
-          onClose={() => setIsMembershipModalOpen(false)}
-        />
       )}
 
       {/* Screen-Center Quota Alert & Notification Card Modal */}

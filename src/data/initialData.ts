@@ -1,4 +1,7 @@
-import { Skill, LLMConfig, UserProfile } from '../types';
+import { Skill, LLMConfig, TTSConfig, UserProfile } from '../types';
+
+// 新建用户（后台建号 / 自助注册）的默认头像，两处共用避免漂移
+export const DEFAULT_USER_AVATAR = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&h=120&q=80';
 
 export const INITIAL_SKILLS: Skill[] = [
   {
@@ -183,4 +186,15 @@ export const DEFAULT_LLM_CONFIG: LLMConfig = {
     privacyPolicyContent: DEFAULT_PRIVACY_POLICY,
     updatedAt: '2026-09-17',
   },
+};
+
+// 语音合成默认关闭：管理员配置 DashScope Key 并打开开关后，用户端才出现「面对面」入口。
+// 默认引擎为 CosyVoice（HTTP 系统音色）；切到 qwen-omni 可使用 Qwen-Omni 复刻音色（Realtime WS）。
+export const DEFAULT_TTS_CONFIG: TTSConfig = {
+  enabled: false,
+  provider: 'cosyvoice',
+  apiBaseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer',
+  wsUrl: 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
+  model: 'cosyvoice-v3-flash',
+  voice: 'longlaobo_v3',
 };

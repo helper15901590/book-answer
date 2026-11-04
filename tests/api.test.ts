@@ -59,6 +59,50 @@ describe('commercial MVP API', () => {
     await request(app).get('/api/chat/sessions?userId=usr_0000000001').expect(401);
   });
 
+  // 自助注册：手机号 + 密码即可，成功即自动登录；重复号/管理员号/弱密码都要给出可翻译的错误码。
+  it('supports self-service registration with automatic sign-in', async () => {
+    const agent = request.agent(app);
+    const registered = await agent.post('/api/auth/register')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .send({ phone: '13900000099', password: 'UserPass123' })
+      .expect(200);
+    expect(registered.body.user.phone).toBe('13900000099');
+    expect(registered.body.user.nickname).toBe('0099');
+    expect(registered.body.user.membershipTier).toBe('free_member');
+    expect(registered.body.user.password).toBeUndefined();
+    expect(db.getUserByPhone('13900000099')).toBeTruthy();
+
+    // 注册即登录：会话与 CSRF Cookie 已种下，可直接访问登录后接口
+    expect(cookieValue(registered, 'book_answer_user_csrf')).not.toBe('');
+    await agent.get('/api/auth/me').expect(200);
+    await agent.get('/api/chat/sessions').expect(200);
+
+    // 公开配置声明注册开放
+    const publicConfig = await request(app).get('/api/config/public').expect(200);
+    expect(publicConfig.body.authPolicy.registrationEnabled).toBe(true);
+
+    // 同一手机号不可重复注册
+    const duplicate = await request(app).post('/api/auth/register')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .send({ phone: '13900000099', password: 'UserPass123' })
+      .expect(400);
+    expect(duplicate.body.error).toBe('PHONE_EXISTS');
+
+    // 管理员手机号不落用户表
+    const adminPhone = await request(app).post('/api/auth/register')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .send({ phone: '13800000000', password: 'UserPass123' })
+      .expect(400);
+    expect(adminPhone.body.error).toBe('PHONE_EXISTS');
+
+    // 密码策略：至少 6 位
+    const weak = await request(app).post('/api/auth/register')
+      .set('Origin', 'http://127.0.0.1:3000')
+      .send({ phone: '13900000098', password: '12345' })
+      .expect(400);
+    expect(weak.body.error).toBe('INVALID_PASSWORD');
+  });
+
   it('supports admin login, user provisioning, forced password change and session isolation', async () => {
     const admin = request.agent(app);
     const login = await admin.post('/api/admin/login').set('Origin', 'http://127.0.0.1:3000').send({ phone: '13800000000', password: 'AdminPass12345678!' }).expect(200);
@@ -131,6 +175,44 @@ describe('commercial MVP API', () => {
       expect(me.body.user.dailyUsedCount).toBe(1);
     } finally {
       await new Promise<void>((resolve) => mock.close(() => resolve()));
+    }
+  });
+
+  // 清空对话列表：只删除当前用户的全部会话，不能波及其他用户。
+  it('clears all chat sessions of the current user only', async () => {
+    await request(app).delete('/api/chat/sessions').expect(401);
+
+    const before = await userAgent.get('/api/chat/sessions').expect(200);
+    expect(before.body.sessions.length).toBeGreaterThan(0);
+
+    // 另一个用户（自助注册用例创建）的会话作为隔离性对照组
+    const otherUser = db.getUserByPhone('13900000099');
+    expect(otherUser).toBeTruthy();
+    db.saveChatSession({
+      id: 'session-other-user-clear-test',
+      userId: otherUser.id,
+      skillId: 'skill-santi',
+      skillTitle: '三体',
+      skillAuthor: '刘慈欣',
+      skillCoverUrl: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: [],
+    });
+
+    try {
+      const cleared = await userAgent.delete('/api/chat/sessions')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .set('X-CSRF-Token', userCsrf)
+        .expect(200);
+      expect(cleared.body.success).toBe(true);
+      expect(cleared.body.deleted).toBeGreaterThan(0);
+
+      const after = await userAgent.get('/api/chat/sessions').expect(200);
+      expect(after.body.sessions).toEqual([]);
+      expect(db.getChatSessions(otherUser.id).map((session: any) => session.id)).toContain('session-other-user-clear-test');
+    } finally {
+      db.deleteChatSession('session-other-user-clear-test', otherUser.id);
     }
   });
 
@@ -372,5 +454,82 @@ describe('commercial MVP API', () => {
     const afterDelete = await userAgent.get('/api/follows').expect(200);
     expect(afterDelete.body.follows.map((skill: any) => skill.id)).not.toContain(skillId);
     await request(app).get(`/api/skills/${skillId}`).expect(404);
+  });
+
+  // 语音合成链路：配置加密存储、错误码、mock DashScope 上游返回音频 URL 后再下载音频。
+  // 上游两跳都用 fetch，因此一个本地 mock 服务即可同时扮演「合成接口」与「音频文件服务」。
+  it('configures DashScope TTS, keeps the key secret and synthesizes audio', async () => {
+    const audioBytes = Buffer.from('ID3-mock-tts-audio');
+    const mock = createServer((req, res) => {
+      if (req.url === '/audio.mp3') {
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg' });
+        res.end(audioBytes);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ output: { audio: { url: `http://127.0.0.1:${(mock.address() as any).port}/audio.mp3` } } }));
+    });
+    await new Promise<void>((resolve) => mock.listen(0, '127.0.0.1', () => resolve()));
+    const port = (mock.address() as any).port;
+
+    try {
+      // 未配置：登录用户得到 TTS_NOT_CONFIGURED；匿名请求在 CSRF 中间件放行后由 requireUser 拦下
+      const notConfigured = await userAgent.post('/api/tts/synthesize')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .set('X-CSRF-Token', userCsrf)
+        .send({ text: '你好' })
+        .expect(503);
+      expect(notConfigured.body.error).toBe('TTS_NOT_CONFIGURED');
+      await request(app).post('/api/tts/synthesize')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .send({ text: '你好' })
+        .expect(401);
+
+      // Key 加密落库：响应与后台读取都不得出现明文
+      const saved = await adminAgent.post('/api/admin/tts-config')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .set('X-CSRF-Token', adminCsrf)
+        .send({
+          apiKeyMode: 'replace',
+          apiKey: 'sk-tts-test-1234567890',
+          ttsConfig: {
+            enabled: true,
+            apiBaseUrl: `http://127.0.0.1:${port}/speech`,
+            model: 'cosyvoice-v3-flash',
+            voice: 'longlaobo_v3',
+          },
+        })
+        .expect(200);
+      expect(saved.body.ttsConfig.apiKeyConfigured).toBe(true);
+      expect(JSON.stringify(saved.body)).not.toContain('sk-tts-test-1234567890');
+
+      const adminView = await adminAgent.get('/api/admin/tts-config').set('Origin', 'http://127.0.0.1:3000').expect(200);
+      expect(adminView.body.ttsConfig).not.toHaveProperty('apiKey');
+      expect(JSON.stringify(adminView.body)).not.toContain('sk-tts-test-1234567890');
+
+      // 公开配置只暴露布尔开关，绝不带 Key
+      const publicConfig = await request(app).get('/api/config/public').expect(200);
+      expect(publicConfig.body.llmConfig.voiceModeEnabled).toBe(true);
+      expect(JSON.stringify(publicConfig.body)).not.toContain('sk-tts-test-1234567890');
+
+      // 合成成功：Markdown 由服务端清洗后发给上游，返回的音频字节原样转给前端
+      const synth = await userAgent.post('/api/tts/synthesize')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .set('X-CSRF-Token', userCsrf)
+        .send({ text: '## 你好\n\n**很高兴**与你对话。' })
+        .expect(200);
+      expect(synth.headers['content-type']).toContain('audio/mpeg');
+      expect(Buffer.from(synth.body).equals(audioBytes)).toBe(true);
+
+      // 纯空白文本清洗后为空，必须拒绝而不是向上游发空请求
+      const empty = await userAgent.post('/api/tts/synthesize')
+        .set('Origin', 'http://127.0.0.1:3000')
+        .set('X-CSRF-Token', userCsrf)
+        .send({ text: '   ' })
+        .expect(400);
+      expect(empty.body.error).toBe('INVALID_REQUEST');
+    } finally {
+      await new Promise<void>((resolve) => mock.close(() => resolve()));
+    }
   });
 });

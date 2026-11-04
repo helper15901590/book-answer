@@ -3,7 +3,7 @@
 > 编码规范以 `AGENTS.md` 为准（YAGNI、最少代码、精准修改、强类型、中文注释）。本文件补充项目结构与命令。
 
 ## 项目简介
-「book_answer」是经典著作与导师人物 AI 思想蒸馏平台。匿名用户可浏览市场和技能详情，但发起对话必须登录；会员与账号由管理员手工开通，暂不接入在线支付。
+「book_answer」是经典著作与导师人物 AI 思想蒸馏平台。匿名用户可浏览市场和技能详情，但发起对话必须登录；支持手机号 + 密码自助注册（注册即登录，默认普通会员），会员仍由管理员手工开通，暂不接入在线支付。
 
 ## 技术栈
 - 前端：React 19 + TypeScript 5.8 + Vite 6 + Tailwind CSS 4
@@ -37,9 +37,11 @@
 | `server/routes/auth.ts` | 登录、强制改密 |
 | `server/routes/chat.ts` | 登录后才能访问的会话与 SSE 对话 |
 | `server/routes/follows.ts` | 登录后的技能关注与关注列表 |
+| `server/routes/tts.ts` + `server/services/tts.ts` / `omniTts.ts` | DashScope CosyVoice / Qwen-Omni 语音合成与登录后合成接口 |
 | `server/routes/admin.ts` | 管理员登录、用户生命周期、技能、配置和统计 |
 | `server/services/security.ts` | AES-GCM、随机令牌、用户 ID |
 | `src/components/AiStudioWorkspace.tsx` | 公开广场（书籍 / 导师 / 可靠）、关注列表与登录后聊天工作区 |
+| `src/components/FaceToFaceView.tsx` | 面对面全屏界面（16:9 人物舞台、右侧对话面板） |
 | `src/components/AdminGate.tsx` | 管理员账号密码登录门控 |
 | `src/components/AdminPanel.tsx` | 后台管理面板 |
 | `tests/api.test.ts` | 认证、越权、强制改密集成测试 |
@@ -47,13 +49,14 @@
 
 ## 约定
 - 匿名用户只能浏览公开内容；聊天、会话和配额接口必须使用服务端认证身份。
+- 自助注册始终开放（`POST /api/auth/register`，手机号 + 密码，成功即签发会话）；管理员仍可在后台建号并强制首登改密。忘记密码无自助找回，界面提示联系管理员。
 - 禁止接受客户端传入的 `userId` 作为身份，禁止把登录态写进 `localStorage`。
 - 公开技能接口必须使用 `PublicSkill`，不得暴露 `systemPrompt`（它就是提示词本体，也是唯一的内容字段）。
 - 用户密码至少 6 位（不强制字符组合，前端提示强度与风险）；管理员密码至少 16 位且含字母和数字。
 - 改密、重置密码和禁用账号必须撤销已有会话。
 - 会员到期时间有两种口径，不可混用：**后台配置等级**（建号、编辑用户）一律以当前时间为基准重新起算；**升级/续费**（`/api/admin/users/upgrade-tier`）在原有效期上顺延，不吞掉用户已付费的剩余时长。
 - 会员**不支持主动降级**：低于当前档位的卡片只显示「已包含」，不提供任何降级入口。购买动作由 `membershipActionFor()` 统一判定（开通 / 续费 / 升级 / 已包含）。
-- LLM 上游失败必须退还预留配额；API Key 永不返回前端明文。
+- LLM 上游失败必须退还预留配额；API Key 永不返回前端明文。语音合成配置存 `system_config` 的 `tts_config`，DashScope Key 同样加密存储、管理端只回显 `apiKeyConfigured`；「面对面」与「书信」共用同一会话，切换会话/模式或发送新消息必须中止旧语音。Qwen-Omni 复刻音色必须与创建音色时的 `target_model` 一致。
 - 关注关系存服务端 `user_follows`，随用户或技能删除级联清理；关注列表同样只返回 `PublicSkill` 字段。
 - 运行数据、`.env`、SQLite、备份和上传素材严禁提交。
 - **多语言（用户端）**：支持简体中文 / 繁体中文 / 英语，切换器在顶栏右上角。**简体中文是唯一权威源**——

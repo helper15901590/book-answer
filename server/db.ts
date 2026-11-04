@@ -9,13 +9,14 @@ import {
   MembershipTier,
   OrderLog,
   Skill,
+  TTSConfig,
   UserProfile,
   getEffectiveMembershipTier,
   isSkillType,
   membershipExpiryAfterRenewal,
   tierDailyLimit,
 } from '../src/types.js';
-import { INITIAL_SKILLS, INITIAL_MENTORS, DEFAULT_LLM_CONFIG } from '../src/data/initialData.js';
+import { INITIAL_SKILLS, INITIAL_MENTORS, DEFAULT_LLM_CONFIG, DEFAULT_TTS_CONFIG } from '../src/data/initialData.js';
 import { DATA_DIR, ADMIN_PHONE } from './config.js';
 import { decryptSecret, encryptSecret, isEncryptedSecret } from './services/security.js';
 
@@ -871,6 +872,55 @@ export class CommercialSQLDatabase {
     return this.getLLMConfig();
   }
 
+  public getTTSConfig(): TTSConfig {
+    const fallback: TTSConfig = { ...DEFAULT_TTS_CONFIG };
+    if (!this.db) return fallback;
+    const row = this.db.prepare("SELECT value FROM system_config WHERE key = 'tts_config'").get() as any;
+    if (!row?.value) return fallback;
+    try {
+      const stored = JSON.parse(row.value) as TTSConfig;
+      const encrypted = stored.apiKey || '';
+      return {
+        ...fallback,
+        ...stored,
+        apiKey: encrypted ? decryptSecret(encrypted) : '',
+        apiKeyConfigured: Boolean(encrypted),
+      };
+    } catch (err) {
+      // 解密失败（如 APP_ENCRYPTION_KEY 变更）时回落默认值，表现为「未配置」而不是启动失败
+      console.warn('TTS 配置读取失败:', err);
+      return fallback;
+    }
+  }
+
+  public getAdminTTSConfigView(): TTSConfig {
+    return { ...this.getTTSConfig(), apiKey: undefined };
+  }
+
+  public saveTTSConfig(input: Partial<TTSConfig>, apiKey?: string | null): TTSConfig {
+    if (!this.db) return this.getTTSConfig();
+    const current = this.getTTSConfig();
+    // 客户端回传的 apiKey / apiKeyConfigured 一律不可信：Key 只能通过 apiKey 参数传递
+    //（undefined 保持、null 清除、字符串替换），与 LLM 配置的 apiKeyMode 语义一致。
+    const { apiKey: _ignoredKey, apiKeyConfigured: _ignoredConfigured, ...safeInput } = input || {};
+    const next: TTSConfig = {
+      ...DEFAULT_TTS_CONFIG,
+      ...current,
+      ...safeInput,
+      enabled: Boolean(safeInput.enabled ?? current.enabled),
+      provider: safeInput.provider === 'qwen-omni' ? 'qwen-omni' : safeInput.provider === 'cosyvoice' ? 'cosyvoice' : current.provider || DEFAULT_TTS_CONFIG.provider,
+      apiBaseUrl: String(safeInput.apiBaseUrl ?? current.apiBaseUrl ?? DEFAULT_TTS_CONFIG.apiBaseUrl).trim() || DEFAULT_TTS_CONFIG.apiBaseUrl,
+      wsUrl: String(safeInput.wsUrl ?? current.wsUrl ?? DEFAULT_TTS_CONFIG.wsUrl).trim() || DEFAULT_TTS_CONFIG.wsUrl,
+      model: String(safeInput.model ?? current.model ?? DEFAULT_TTS_CONFIG.model).trim() || DEFAULT_TTS_CONFIG.model,
+      voice: String(safeInput.voice ?? current.voice ?? DEFAULT_TTS_CONFIG.voice).trim() || DEFAULT_TTS_CONFIG.voice,
+    };
+    const key = apiKey === undefined ? current.apiKey : apiKey;
+    const stored: TTSConfig = { ...next, apiKey: key ? encryptSecret(key) : '' };
+    delete stored.apiKeyConfigured;
+    this.db.prepare("INSERT OR REPLACE INTO system_config (key, value) VALUES ('tts_config', ?)").run(JSON.stringify(stored));
+    return this.getTTSConfig();
+  }
+
   public getChatSessions(userId?: string): ChatSession[] {
     if (!this.db) return [];
     const rows = (userId
@@ -923,6 +973,12 @@ export class CommercialSQLDatabase {
   public deleteChatSession(sessionId: string, userId: string): boolean {
     if (!this.db) return false;
     return this.db.prepare('DELETE FROM chat_sessions WHERE id = ? AND user_id = ?').run(sessionId, userId).changes > 0;
+  }
+
+  // 清空某个用户的全部对话记录；userId 只来自服务端会话，不接受客户端传入。
+  public deleteAllChatSessions(userId: string): number {
+    if (!this.db) return 0;
+    return this.db.prepare('DELETE FROM chat_sessions WHERE user_id = ?').run(userId).changes;
   }
 
   public createAuthSession(record: Omit<AuthSessionRecord, 'id' | 'createdAt' | 'lastSeenAt'>): AuthSessionRecord {

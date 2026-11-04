@@ -15,6 +15,7 @@ import { registerAuthRoutes } from './routes/auth.js';
 import { ensureAdminSeed } from './services/adminSeed.js';
 import { registerSkillsRoutes } from './routes/skills.js';
 import { registerFollowRoutes } from './routes/follows.js';
+import { registerTTSRoutes } from './routes/tts.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerConfigRoutes } from './routes/config.js';
@@ -33,6 +34,9 @@ export async function createApp() {
         scriptSrc: isViteDev ? ["'self'", "'unsafe-inline'"] : ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:', 'https://images.unsplash.com'],
+        // 语音回复以 Blob URL 交给 <audio> 播放，media-src 必须显式放行 blob:；
+        // 其余来源仍被默认指令锁在同源。
+        mediaSrc: ["'self'", 'blob:'],
         connectSrc: isViteDev ? ["'self'", 'ws:', 'wss:'] : ["'self'"],
         fontSrc: ["'self'", 'data:'],
         objectSrc: ["'none'"],
@@ -81,6 +85,7 @@ export async function createApp() {
   registerAuthRoutes(app);
   registerSkillsRoutes(app);
   registerFollowRoutes(app);
+  registerTTSRoutes(app);
   registerChatRoutes(app);
   registerAdminRoutes(app);
   registerConfigRoutes(app);

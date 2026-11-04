@@ -8,7 +8,7 @@
 
 ## 1. 项目定位与业务边界
 
-「问书（book_answer）」把书籍 / 导师的蒸馏文档（本质是一段 `systemPrompt`）包装成可对话的 AI 化身。匿名用户可以浏览书籍广场、导师广场、分类、搜索、详情；**发起对话、查看历史、消耗配额必须登录**。账号不开放自助注册，由管理员在后台创建并手工开通会员，当前**没有在线支付**。
+「问书（book_answer）」把书籍 / 导师的蒸馏文档（本质是一段 `systemPrompt`）包装成可对话的 AI 化身。匿名用户可以浏览书籍广场、导师广场、分类、搜索、详情；**发起对话、查看历史、消耗配额必须登录**。支持手机号 + 密码自助注册（注册即登录，默认普通会员）；管理员仍可在后台建号并手工开通会员，当前**没有在线支付**。忘记密码无自助找回，界面提示联系管理员。
 
 四个业务角色：匿名访客（只读公开接口）、普通用户（登录后聊天）、管理员（后台全部能力）、LLM 上游（OpenAI 兼容接口，DeepSeek 为默认）。
 
@@ -57,7 +57,7 @@ Express（server/app.ts 装配，中间件顺序如下）
 5. /assets 静态目录 + 独立限流 300 次/分
 6. 请求计数 → authMiddleware（解析用户/管理员会话）
 7. /api 统一 CSRF 校验（豁免表见下）
-8. 路由：auth / skills / chat / admin / config
+8. 路由：auth / skills / follows / tts / chat / admin / config
 9. Sentry 错误处理 → /api 404 → 静态资源/Vite → BASE_PATH 包装
 ```
 
@@ -80,6 +80,7 @@ Express（server/app.ts 装配，中间件顺序如下）
 | `server/routes/auth.ts` | 用户登录、首登改密、自助注销、me、登出 | 中 |
 | `server/routes/chat.ts` | 会话 CRUD、SSE 流式聊天、同步聊天、配额结算 | 高 |
 | `server/routes/follows.ts` | 登录后关注/取关与关注列表 | 中 |
+| `server/routes/tts.ts` + `server/services/tts.ts` / `omniTts.ts` | 登录后的语音合成（CosyVoice HTTP 或 Qwen-Omni Realtime 复刻音色），管理端配置与试听 | 低 |
 | `server/routes/admin.ts` | 管理员登录、用户生命周期、技能/标签、LLM 配置、上传 | 高 |
 | `server/routes/skills.ts` | 公开技能列表/详情/点击热度、标签、推荐问提炼 | 中 |
 | `server/routes/config.ts` | 公开配置（额度、套餐、协议、口令策略） | 低 |
@@ -89,6 +90,7 @@ Express（server/app.ts 装配，中间件顺序如下）
 | `src/App.tsx` | 用户端根组件：用户态、公开配置、技能列表的加载与刷新 | 中 |
 | `src/components/AiStudioWorkspace.tsx` | 用户端全部 UI 与交互（广场、关注列表、聊天；1600+ 行） | 高 |
 | `src/components/PlazaView.tsx` + `src/lib/usePlazaController.ts` | 书籍 / 导师 / 可靠三广场共用的视图壳与筛选分页状态 | 中 |
+| `src/components/FaceToFaceView.tsx` + `src/lib/useVoicePlayback.ts` | 面对面全屏界面（16:9 人物舞台 + 对话面板）与分句播放队列 | 中 |
 | `src/components/AdminPanel.tsx` | 后台全部页签（3100+ 行，见 §9） | 高 |
 | `src/i18n/` | 三语字典、`t()` 取值、服务端错误码翻译 | 高（改文案） |
 | `src/lib/apiFetch.ts` | fetch 包装：补前缀、带 Cookie、注入 CSRF、`assetSrc`、`tryLogout` | 低 |
@@ -109,7 +111,7 @@ Express（server/app.ts 装配，中间件顺序如下）
 | `chat_sessions` | 会话与消息 | `messages` 是整段 JSON 数组；带技能标题/作者/封面的冗余快照；`user_id` 外键级联删除 |
 | `user_follows` | 用户关注关系 | 复合主键 `(user_id, skill_id)` 保证幂等；双外键级联：删除用户或技能时自动清理 |
 | `orders` | 订单表 | **当前无任何写入路径**，是在线支付功能的预留（见 §12 技术债） |
-| `system_config` | KV 配置 | `tags`（JSON 数组）、`llm_config`（含加密后的 API Key、额度、套餐价格、协议正文） |
+| `system_config` | KV 配置 | `tags`（JSON 数组）、`llm_config`（含加密后的 API Key、额度、套餐价格、协议正文）、`tts_config`（语音合成开关、模型、音色、加密 Key） |
 | `auth_sessions` | 服务端会话 | 只存令牌的 sha256；`csrf_hash` 同时绑定 CSRF 令牌；`auth_version` 用于管理员会话失效；30 天滚动 / 管理员 8 小时 |
 | `auth_challenges` | 短期挑战 | 首登改密，10 分钟过期、一次性 |
 | `quota_ledger` | 配额账本 | `request_id` 唯一（幂等防重）；状态 reserved → consumed/refunded；`period_key` 用于跨周期退款保护 |
@@ -144,7 +146,7 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 
 **管理员账号不落库**：完全来自环境变量 `ADMIN_PHONE` / `ADMIN_PASSWORD`（生产要求 11 位手机号 + 16 位以上且含字母数字），`buildAdminProfile()` 合成一个虚拟档案。登录仅校验手机号 + 密码，首次登录与后续登录没有区别；修改管理员密码会自动让旧会话失效。
 
-**用户登录**：失败 5 次锁定 15 分钟（持久化在 users 表）；bcrypt 成本因子 10；首登（`must_change_password=1`）不发会话，只发 10 分钟的一次性改密挑战 Cookie；改密成功后旧会话全部撤销并重新签发会话。管理员登录失败计数在**进程内存**中（5 次 / 15 分钟），多实例部署会失效。
+**用户登录**：失败 5 次锁定 15 分钟（持久化在 users 表）；bcrypt 成本因子 10；首登（`must_change_password=1`）不发会话，只发 10 分钟的一次性改密挑战 Cookie；改密成功后旧会话全部撤销并重新签发会话。**自助注册**（`POST /api/auth/register`，5 次/分/IP）成功后直接签发 30 天会话，注册用户默认普通会员、不强制改密；手机号唯一约束兜底并发同号注册。管理员登录失败计数在**进程内存**中（5 次 / 15 分钟），多实例部署会失效。
 
 **加密**：`APP_ENCRYPTION_KEY`（32 字节 base64 或 64 位 hex）驱动 AES-256-GCM，密文格式 `enc:v1:iv:tag:cipher`。LLM API Key 加密落库；日志经 pino redact 屏蔽 Cookie、Authorization、密码、验证码、API Key、上传内容。
 
@@ -156,7 +158,7 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 
 ### 7.1 首次登录与强制改密
 
-管理员建号时生成 16 位临时密码（只显示一次），`must_change_password=1`。用户登录时服务端只创建 `password_change` 挑战并种 `book_answer_password_change` Cookie，不建会话；`POST /api/auth/change-password` 校验挑战 + 当前密码 + 新密码策略（至少 6 位，不强制组合，前端实时提示强度），成功后撤销该用户全部旧会话、标记挑战已用、重新签发正式会话。登录态下的自助改密入口已移除，该接口只服务于首登场景。
+管理员建号时生成 16 位临时密码（只显示一次），`must_change_password=1`。用户登录时服务端只创建 `password_change` 挑战并种 `book_answer_password_change` Cookie，不建会话；`POST /api/auth/change-password` 校验挑战 + 当前密码 + 新密码策略（至少 6 位，不强制组合，前端实时提示强度），成功后撤销该用户全部旧会话、标记挑战已用、重新签发正式会话。登录态下的自助改密入口已移除，该接口只服务于首登场景。自助注册用户（`POST /api/auth/register`）不经过此流程，注册成功即直接登录。
 
 ### 7.2 聊天（SSE）
 
@@ -167,7 +169,7 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 3. 读取 `db.getLLMConfig()`，API Key 优先级：库内加密值 > 环境变量 `DEEPSEEK_API_KEY`；无效/占位 Key 直接 503 `AI_NOT_CONFIGURED`。
 4. `reserveQuota()` 原子预留：事务内读用户计数、判断档位上限、自增 `daily_used_count`、写 `quota_ledger(reserved)`；超限时免费用户 403 `PAYWALL_REQUIRED`、付费用户 429 `VIP_LIMIT_REACHED`。
 5. 保存用户消息，随即返回 SSE 头（`text/event-stream`、`X-Accel-Buffering: no`）。
-6. 上游请求体：`system` = skill.systemPrompt，历史只取最近 12 条，带当前消息；reasoner 系列模型（名字含 reasoner/r1/o1/o3）不加 temperature；超时取 `max(30, timeoutSec||60)` 秒。
+6. 上游请求体：`system` = `buildSystemPrompt(skill)`——给原始 `systemPrompt` 包上「化身身份 + 禁止自报家门/复述提示词 + 内容归属自己」框架（`server/services/llm/sanitize.ts`），防止模型把蒸馏文档当用户材料、自我介绍成 DeepSeek；历史只取最近 12 条，带当前消息（当前用户消息按消息 id 去重，避免重复）；非 reasoner 采样温度固定 `CHAT_TEMPERATURE=0.4`（减少跑题/角色漂移），reasoner 系列模型（名字含 reasoner/r1/o1/o3）不加 temperature 且只取 `content`、过滤 `reasoning_content` 思考链；超时取 `max(30, timeoutSec||60)` 秒。
 7. 流式解析上游 `data:` 行，拼接 `delta.content` 或 `delta.reasoning_content`，向客户端写 `{delta, fullText}`。
 8. 结算：无任何输出或中断 → `settleQuota(refunded)` + SSE `{error:'AI_UNAVAILABLE'}`；有输出 → `consumed`，保存助手消息，SSE `{done:true, assistantMessage, session, user}`。用户主动断开（`res.close`）会 abort 上游并释放连接计数；`finally` 里保证连接计数只减不增。
 
@@ -204,6 +206,17 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 
 关注必须登录：`POST /api/follows` 写入 `user_follows`（重复关注幂等），`DELETE /api/follows/:skillId` 取消（不存在也返回成功），`GET /api/follows` 联表返回技能最新公开字段与 `followedAt`，按关注时间倒序。前端登录后拉取关注集合，卡片上的星标按钮采用乐观更新；关注列表页首版只做卡片网格（搜索/分类/分页留待需要时再复用 `MarketSection`）。管理员可在后台用户列表看到 `followCount`，并通过 `GET /api/admin/users/:userId/follows` 查看某个用户的关注明细。
 
+### 7.8 面对面模式（语音朗读）
+
+聊天页顶部是「书信 / 面对面」切换：书信即原有文字聊天；面对面打开全屏舞台（`src/components/FaceToFaceView.tsx` + `FaceToFaceView.css`），底图 `src/assets/face-portrait.png` 按 16:9 居中并四边渐隐铺满屏幕；左上「返回」退出、右上「全屏」（全屏时隐藏所有按钮，Esc 退出）。右侧对话区无面板底色，音波在上、只展示最新一轮 AI 回复（不回显用户提问），输入为细线样式；与文字聊天共用同一会话、消息与未发送草稿。AI 回复仍由现有对话模型生成；SSE 流式生成时前端按句切分（`src/lib/voiceText.ts`），逐句调用 `POST /api/tts/synthesize` 合成播放，播放队列（`src/lib/useVoicePlayback.ts`）维持「1 句在播 + 1 句在合成」的预取；`useVoicePlayback` 在每句音频开始播放时通过 `currentSpeechText / isRevealing` 只显示当前正在朗读的一句，新句替换旧句、上一句自动消失（逐句字幕为纯文本：流式分句可能切断 `**` 等 Markdown 标记，字幕与合成都使用已去除标记的文本；完整回复切回书信模式查看）；返回时停止语音。
+
+TTS 支持两种引擎（配置存 `system_config` 的 `tts_config`，API Key 用 `APP_ENCRYPTION_KEY` 加密）：
+
+- `cosyvoice`：DashScope CosyVoice HTTP 接口，返回 mp3；可用系统音色或 CosyVoice 复刻音色。
+- `qwen-omni`：Qwen-Omni Realtime WebSocket（`server/services/omniTts.ts`，服务端用 `ws` 包连接），PCM16/24k 音频由服务端封装成 WAV；用于 Omni 声音复刻音色。复刻音色必须与创建时的 `target_model` 一致（如 `qwen3.8-omni-flash-realtime`）；qwen3.8 若要求业务空间专属地址，后台可改 Realtime 地址。朗读契约必须同时放在 `session.instructions` 与 `response.create.response.instructions`——只放 session 级时，Omni 偶尔会把「什么是文化？」这类问句当成用户提问去回答，导致语音内容与字幕不一致。
+
+管理端「模型配置 → 语音对话（TTS）」可切换引擎、填写模型/音色并试听。`voiceModeEnabled` 只在「启用 + Key 有效 + 当前引擎字段齐全」时为真，用户端据此显示面对面入口。TTS 不额外扣聊天配额，接口有独立限流（60 次/分）与 500 字文本上限。
+
 ---
 
 ## 8. API 清单
@@ -218,6 +231,7 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 | GET | `/api/skills/:id` | 单个技能（PublicSkill） |
 | POST | `/api/skills/:id/click` | 热度 +1 |
 | GET | `/api/tags` | 分类标签列表 |
+| POST | `/api/auth/register` | 手机号 + 密码自助注册；成功即签发会话（默认普通会员，5 次/分/IP） |
 | POST | `/api/auth/login` | 手机号 + 密码；可能返回 `passwordChangeRequired` |
 
 登录后（`requireUser`）：
@@ -231,13 +245,15 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 | GET | `/api/follows` | 当前用户的关注列表（PublicSkill + followedAt） |
 | POST | `/api/follows` | 关注技能（幂等，技能不存在 404 `SKILL_NOT_FOUND`） |
 | DELETE | `/api/follows/:skillId` | 取消关注（幂等） |
+| POST | `/api/tts/synthesize` | 文字转语音（≤500 字），返回 `audio/mpeg`；未配置 503 `TTS_NOT_CONFIGURED`，上游失败 502 `TTS_UNAVAILABLE` |
 | GET | `/api/chat/sessions` | 本人会话列表 |
 | POST | `/api/chat/sessions` | 新建会话（带 AI 欢迎语与推荐问） |
 | DELETE | `/api/chat/sessions/:id` | 删除本人会话 |
+| DELETE | `/api/chat/sessions` | 清空本人全部会话与消息（不可恢复） |
 | POST | `/api/chat/stream` | SSE 流式对话（前端唯一在用） |
 | POST | `/api/chat/send` | 同步对话（备用，前端未接） |
 
-管理员（`/api/admin/*`，除登录外均 `requireAdmin`）：`login`、`logout`、`me`、`stats`；用户管理 `users`（列表，含 `followCount`）、`users/:userId/follows`（查看关注）、`users/create`、`users/reset-password`、`users/status`、`users/update`、`users/upgrade-tier`、`DELETE users/:userId`、`users/clear-all`；技能 `skills`（GET/POST）、`DELETE skills/:id`、`skills/generate-questions`；标签 `tags`；上传 `upload-asset`；订单 `orders`、`orders/clear-all`；模型配置 `llm-config`（GET/POST）、`llm-test`。
+管理员（`/api/admin/*`，除登录外均 `requireAdmin`）：`login`、`logout`、`me`、`stats`；用户管理 `users`（列表，含 `followCount`）、`users/:userId/follows`（查看关注）、`users/create`、`users/reset-password`、`users/status`、`users/update`、`users/upgrade-tier`、`DELETE users/:userId`、`users/clear-all`；技能 `skills`（GET/POST）、`DELETE skills/:id`、`skills/generate-questions`；标签 `tags`；上传 `upload-asset`；订单 `orders`、`orders/clear-all`；模型配置 `llm-config`（GET/POST）、`llm-test`、`tts-config`（GET/POST）、`tts-test`。
 
 约定：所有错误响应体形如 `{ error: 'ERROR_CODE', message: '中文兜底' }`；用户端按错误码查 `src/i18n/serverMessage.ts` 的映射表翻译，未知码才回退 message。新增面向用户的错误码必须同时更新映射表与三份字典。
 
@@ -245,7 +261,7 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 
 ## 9. 前端结构
 
-**用户端**是单体状态：`App.tsx` 持有 `user`、`skills`、`llmConfig`、`authPolicy`、`selectedSkill`，并在窗口 focus / 标签页可见时重新拉取 `/api/auth/me` 与 `/api/config/public`（保证后台改额度后前端及时对齐）。`AiStudioWorkspace` 内部再持有会话列表、`mainView`（`market` / `mentor` / `reliable` / `follows` / `chat`）、关注集合、按对话框隔离的输入草稿、流式状态、各类弹窗。三个广场共用 `PlazaView` 视图壳与 `usePlazaController` 状态钩子（搜索、分类、分页、标签溢出、详情弹窗），避免三份复制；关注列表由 `FollowListView` 单独渲染。聊天请求直接 `fetch` SSE 流并手工解析 `data:` 行，没有用 EventSource（需要 POST + 自定义头）。
+**用户端**是单体状态：`App.tsx` 持有 `user`、`skills`、`llmConfig`、`authPolicy`、`selectedSkill`，并在窗口 focus / 标签页可见时重新拉取 `/api/auth/me` 与 `/api/config/public`（保证后台改额度后前端及时对齐）。`AiStudioWorkspace` 内部再持有会话列表、`mainView`（`market` / `mentor` / `reliable` / `follows` / `chat`）、关注集合、按对话框隔离的输入草稿、流式状态、各类弹窗。三个广场共用 `PlazaView` 视图壳与 `usePlazaController` 状态钩子（搜索、分类、分页、标签溢出、详情弹窗），避免三份复制；关注列表由 `FollowListView` 单独渲染。聊天页顶部的「书信 / 面对面」切换只在公开配置 `voiceModeEnabled` 为真时显示面对面入口；面对面由 `FaceToFaceView` 全屏渲染（16:9 人物画面、玻璃面板、悬浮输入框），底层文字聊天保持挂载，会话与草稿共享。聊天请求直接 `fetch` SSE 流并手工解析 `data:` 行，没有用 EventSource（需要 POST + 自定义头）。
 
 用户端交互要点：入场默认市场；选择书籍/导师时先打点热度再开聊；已有带消息的会话直接复用，空会话按新会话处理；每本书的输入草稿互不串台；配额先在本地预判（`checkQuotaAndCanProceed`），服务端仍是最终裁决；流式失败时把错误码翻译成当前语言追加为一条助手消息。
 
@@ -261,7 +277,7 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 
 `tests/` 用 vitest + supertest 直接对 `createApp()` 发请求，环境变量由 `vitest.config.ts` 注入（`NODE_ENV=test`、固定管理员凭证、`DATA_DIR=./.test-runtime`、`BASE_PATH=''`），测试文件串行执行（`fileParallelism: false`）。
 
-`api.test.ts` 覆盖：公开 DTO 不含 `systemPrompt`；聊天接口拒绝匿名与伪造 `userId`；管理员账号密码登录 + 建号 + 首登强制改密 + 会话隔离；mock LLM 的 SSE 成功与失败（失败退款后 `dailyUsedCount` 仍为 1）；CSRF Cookie 与会话同寿命、自助注销（三语短语、大小写不敏感）；`ORIGIN_REJECTED` 与 `CSRF_REJECTED` 区分；标签上限、拒空、级联改名与审计留痕；关注关系与可靠类型。
+`api.test.ts` 覆盖：公开 DTO 不含 `systemPrompt`；聊天接口拒绝匿名与伪造 `userId`；管理员账号密码登录 + 建号 + 首登强制改密 + 会话隔离；mock LLM 的 SSE 成功与失败（失败退款后 `dailyUsedCount` 仍为 1）；CSRF Cookie 与会话同寿命、自助注销（三语短语、大小写不敏感）；`ORIGIN_REJECTED` 与 `CSRF_REJECTED` 区分；标签上限、拒空、级联改名与审计留痕；关注关系与可靠类型；批量清空会话仅影响本人。
 
 `subpath.test.ts` 用 `vi.stubEnv('BASE_PATH', '/bookanswer')` + 动态 import 验证前缀内可达、前缀外 404、CSRF 豁免表跟随前缀。
 
@@ -351,6 +367,8 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 | 解密失败、LLM 配置静默回退默认值 | `APP_ENCRYPTION_KEY` 与建库时不一致 | `agreements:sync` 等脚本会用 `apiKeyConfigured === undefined` 识别该状态 |
 | 升级后到期时间不对 | 混用了两种到期口径 | 后台保存走 `membershipExpiryFromNow`，升级接口走 `membershipExpiryAfterRenewal` |
 | 用户第一天还能聊天、第二天额度没重置 | `TZ` 与部署环境不一致 | 容器固定 `Asia/Shanghai`；`getTodayString()` 取服务器本地时区 |
+| 语音模式没有入口 / 不出声 | TTS 未启用、Key 无效、引擎字段不全或浏览器拦截自动播放 | 后台「模型配置 → 语音对话」确认已启用且 `TTS_NOT_CONFIGURED` 未出现，点「试听已保存的配置」验证上游；Qwen-Omni 复刻音色要确认模型与 `target_model` 一致、Realtime 地址可达；页面无手势时自动播放会被拦截，点击 AI 回答可重播 |
+| 语音断断续续 / 缺句 | 每句一次 Realtime 请求，上游慢、限流或偶发失败都会表现为句间停顿或跳句 | 浏览器 Network 查看 `/api/tts/synthesize` 的状态与耗时；服务端日志看 `TTS 合成耗时`、`语音合成上游失败`、`TTS 限流触发`；确认 DashScope 账号并发/限流。当前已按用户限流 120 次/分、预取 3 句、5xx 自动重试一次，并兼容 `response.audio.done` 提前收尾 |
 | 开发模式整页白屏 | 严格 CSP 拦掉了 Vite 注入的内联脚本或 HMR WebSocket | `app.ts` 的 `isViteDev` 分支放宽了 script/connect 指令；确认没把它误删 |
 | 恢复备份后容器报 readonly database | 文件属主被改回 root | 以容器 uid 1000 为属主：`chown -R 1000:1000 data/` |
 

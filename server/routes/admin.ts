@@ -17,9 +17,15 @@ import {
   sanitizeUser,
 } from '../middleware/auth.js';
 import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl } from '../services/llm/sanitize.js';
+import {
+  TTSNotConfiguredError,
+  TTS_TEST_TEXT,
+  synthesizeSpeech,
+} from '../services/tts.js';
 import { BCRYPT_ROUNDS, generateTemporaryPassword } from '../services/password.js';
 import { asyncJsonHandler } from '../middleware/asyncHandler.js';
 import { generateUserId, randomToken } from '../services/security.js';
+import { DEFAULT_USER_AVATAR } from '../../src/data/initialData.js';
 import { MembershipTier, UserProfile, cleanBookTitle, isSkillType, membershipExpiryFromNow, tierDailyLimit } from '../../src/types.js';
 import { toPublicSkill } from './skills.js';
 
@@ -120,7 +126,7 @@ export function registerAdminRoutes(app: Express): void {
       phone,
       password: await bcrypt.hash(temporaryPassword, BCRYPT_ROUNDS),
       nickname: phone.slice(-4),
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&h=120&q=80',
+      avatar: DEFAULT_USER_AVATAR,
       role: 'member',
       status: 'active',
       membershipTier,
@@ -330,6 +336,66 @@ export function registerAdminRoutes(app: Express): void {
       res.json({ success: false, error: error?.message || '连接失败' });
     } finally {
       clearTimeout(timer);
+    }
+  });
+
+  app.get('/api/admin/tts-config', requireAdmin, (_req, res) => res.json({ ttsConfig: db.getAdminTTSConfigView() }));
+
+  app.post('/api/admin/tts-config', requireAdmin, (req, res) => {
+    const input = req.body?.ttsConfig;
+    if (!input || typeof input !== 'object') return res.status(400).json({ error: 'Missing ttsConfig data' });
+    const mode = req.body?.apiKeyMode as 'keep' | 'replace' | 'clear' | undefined;
+    // 空串视为「未提交」，避免表单原样回传空 Key 时被误判为「替换成空值」
+    const rawKey = typeof req.body?.apiKey === 'string' ? req.body.apiKey.trim() : undefined;
+    const submittedKey = rawKey || undefined;
+    const apiKey = mode === 'clear' ? null : mode === 'replace' || submittedKey ? submittedKey : undefined;
+    if (mode === 'replace' && !apiKey) return res.status(400).json({ error: 'INVALID_API_KEY', message: '请填写 API Key' });
+
+    const apiBaseUrl = String(input.apiBaseUrl || '').trim();
+    if (apiBaseUrl && !/^https?:\/\//i.test(apiBaseUrl)) {
+      return res.status(400).json({ error: 'INVALID_TTS_CONFIG', message: '语音服务地址必须以 http:// 或 https:// 开头' });
+    }
+    const wsUrl = String(input.wsUrl || '').trim();
+    if (wsUrl && !/^wss?:\/\//i.test(wsUrl)) {
+      return res.status(400).json({ error: 'INVALID_TTS_CONFIG', message: 'Realtime 地址必须以 ws:// 或 wss:// 开头' });
+    }
+
+    const saved = db.saveTTSConfig(input, apiKey);
+    // 语音配置涉及外部服务密钥与计费通道，变更留审计（只记是否更换 Key，绝不记录 Key 本身）
+    db.audit({
+      actorType: 'admin', actorId: 'admin', action: 'tts_config_updated',
+      metadata: {
+        enabled: saved.enabled,
+        model: saved.model,
+        voice: saved.voice,
+        apiKeyChanged: apiKey !== undefined,
+      },
+      ip: req.ip, userAgent: req.get('user-agent') || undefined,
+    });
+    res.json({ success: true, ttsConfig: db.getAdminTTSConfigView(), apiKeyConfigured: Boolean(saved.apiKey) });
+  });
+
+  // 后台「试听」：使用已保存的配置合成固定测试语，直接返回音频。
+  // 未保存的新配置不参与试听，避免半套配置（例如新 Key + 旧地址）造成的误判。
+  app.post('/api/admin/tts-test', requireAdmin, adminActionLimiter, async (_req, res) => {
+    try {
+      const { buffer, mime } = await synthesizeSpeech(TTS_TEST_TEXT);
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(buffer);
+    } catch (err) {
+      if (err instanceof TTSNotConfiguredError) {
+        return res.status(400).json({ error: 'TTS_NOT_CONFIGURED', message: '请先开启语音对话并保存有效的 API Key' });
+      }
+      // 管理端试听允许返回上游错误摘要，便于定位地址/模型/音色问题；不含 Key
+      const detail = typeof (err as any)?.detail === 'string' ? (err as any).detail : '';
+      console.warn('TTS 试听失败:', detail || (err as Error)?.message || err);
+      return res.status(502).json({
+        error: 'TTS_UNAVAILABLE',
+        message: detail
+          ? `语音合成失败：${detail.slice(0, 240)}`
+          : '语音合成失败，请检查地址、模型、音色与 Key 后重试',
+      });
     }
   });
 }

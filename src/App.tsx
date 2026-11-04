@@ -5,7 +5,7 @@ import { AiStudioWorkspace } from './components/AiStudioWorkspace';
 import { LoginModal } from './components/LoginModal';
 import { apiFetch } from './lib/apiFetch';
 
-const DEFAULT_AUTH_POLICY: AuthPolicy = { userMinLength: 6, adminMinLength: 16, registrationEnabled: false };
+const DEFAULT_AUTH_POLICY: AuthPolicy = { userMinLength: 6, adminMinLength: 16, registrationEnabled: true };
 
 export default function App() {
   const [user, setUser] = useState<UserProfile | null>(null);

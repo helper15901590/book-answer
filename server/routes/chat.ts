@@ -6,11 +6,13 @@ import { db } from '../db.js';
 import { AuthRequest, requireUser, sanitizeUser } from '../middleware/auth.js';
 import { metrics } from '../services/metrics.js';
 import { reserveQuota, settleQuota } from '../services/quota.js';
-import { cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl, sanitizeMessagesForLLM } from '../services/llm/sanitize.js';
+import { buildSystemPrompt, cleanApiKey, isInvalidOrPlaceholderKey, resolveOpenAIUrl, sanitizeMessagesForLLM } from '../services/llm/sanitize.js';
 import { ChatMessage, ChatSession, PublicChatSession, Skill, cleanBookTitle } from '../../src/types.js';
 
 const chatLimiter = rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '请求过于频繁，请稍后再试' } });
 const MAX_MESSAGE_LENGTH = 4000;
+// 非 reasoner 模型的采样温度：从 0.7 降到 0.4，减少跑题与「自我介绍成 DeepSeek」式角色漂移，化身扮演更稳定。
+const CHAT_TEMPERATURE = 0.4;
 const chatSchema = z.object({
   sessionId: z.string().min(1).max(128),
   skillId: z.string().min(1).optional(),
@@ -115,6 +117,12 @@ export function registerChatRoutes(app: Express): void {
     return res.json({ session: sessionView(newSession) });
   });
 
+  // 清空当前用户的全部会话与消息记录（不可恢复）；只按服务端会话身份删除。
+  app.delete('/api/chat/sessions', requireUser, (req: AuthRequest, res) => {
+    const deleted = db.deleteAllChatSessions(req.user!.id);
+    return res.json({ success: true, deleted });
+  });
+
   app.delete('/api/chat/sessions/:id', requireUser, (req: AuthRequest, res) => {
     const deleted = db.deleteChatSession(req.params.id, req.user!.id);
     return res.json({ success: deleted });
@@ -172,7 +180,7 @@ export function registerChatRoutes(app: Express): void {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
       if (typeof (res as any).flush === 'function') (res as any).flush();
     };
-    const messagesPayload = sanitizeMessagesForLLM((skill?.systemPrompt || '').trim(), session.messages, messageText);
+    const messagesPayload = sanitizeMessagesForLLM(buildSystemPrompt(skill), session.messages, messageText, userMsg.id);
     const isReasoner = modelUsed.includes('reasoner') || modelUsed.includes('r1') || modelUsed.includes('o1') || modelUsed.includes('o3');
     const timeoutSeconds = Math.max(30, Number(llmConfig.timeoutSec) || 60);
     const timeoutTimer = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
@@ -181,7 +189,7 @@ export function registerChatRoutes(app: Express): void {
       const upstreamRes = await fetch(resolveOpenAIUrl(apiBaseUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model: modelUsed, messages: messagesPayload, stream: true, max_tokens: llmConfig.maxTokens ? Number(llmConfig.maxTokens) : 4096, ...(isReasoner ? {} : { temperature: 0.7 }) }),
+        body: JSON.stringify({ model: modelUsed, messages: messagesPayload, stream: true, max_tokens: llmConfig.maxTokens ? Number(llmConfig.maxTokens) : 4096, ...(isReasoner ? {} : { temperature: CHAT_TEMPERATURE }) }),
         signal: controller.signal,
       });
       if (upstreamRes.ok && upstreamRes.body) {
@@ -201,7 +209,8 @@ export function registerChatRoutes(app: Express): void {
             if (!payload || payload === '[DONE]') continue;
             try {
               const choice = JSON.parse(payload).choices?.[0];
-              const delta = choice?.delta?.content ?? choice?.delta?.reasoning_content ?? '';
+              // reasoner 模型会先流式输出 reasoning_content（思考链）再输出 content；只取 content，思考链不进正文。
+              const delta = choice?.delta?.content ?? '';
               if (delta) {
                 fullAssistantReply += delta;
                 writeSSE({ delta, fullText: fullAssistantReply });
@@ -270,12 +279,13 @@ export function registerChatRoutes(app: Express): void {
       const upstream = await fetch(resolveOpenAIUrl(apiBaseUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model: modelUsed, messages: sanitizeMessagesForLLM((skill?.systemPrompt || '').trim(), session.messages, messageText), stream: false, max_tokens: llmConfig.maxTokens ? Number(llmConfig.maxTokens) : 4096, ...(isReasoner ? {} : { temperature: 0.7 }) }),
+        body: JSON.stringify({ model: modelUsed, messages: sanitizeMessagesForLLM(buildSystemPrompt(skill), session.messages, messageText, userMsg.id), stream: false, max_tokens: llmConfig.maxTokens ? Number(llmConfig.maxTokens) : 4096, ...(isReasoner ? {} : { temperature: CHAT_TEMPERATURE }) }),
         signal: controller.signal,
       });
       if (upstream.ok) {
         const json: any = await upstream.json().catch(() => ({}));
-        assistantReply = json.choices?.[0]?.message?.content || json.choices?.[0]?.message?.reasoning_content || '';
+        // reasoner 模型只取最终 content，思考链（reasoning_content）不进正文。
+        assistantReply = json.choices?.[0]?.message?.content || '';
       }
     } catch (err: any) {
       console.warn('主路 LLM 同步调用异常:', err?.message || err);

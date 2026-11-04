@@ -1,12 +1,13 @@
 # 问书（book_answer）
 
-经典著作与导师人物 AI 思想蒸馏平台。管理员上传书籍 / 导师的蒸馏文档（skill.md），平台将其转化为可对话的 AI 化身；匿名用户可浏览市场与详情，发起对话必须登录。会员由管理员手工开通，暂不接入在线支付。
+经典著作与导师人物 AI 思想蒸馏平台。管理员上传书籍 / 导师的蒸馏文档（skill.md），平台将其转化为可对话的 AI 化身；匿名用户可浏览市场与详情，支持手机号 + 密码自助注册，发起对话必须登录。会员由管理员手工开通，暂不接入在线支付。
 
 ## 功能特性
 
 - **书籍广场 / 导师广场 / 可靠广场**：分类、搜索、热度排行、详情页，20 张/批分页加载
 - **关注列表**：登录后可关注任意技能卡片，关注关系服务端持久化，集中查看已关注内容
-- **AI 对话**：SSE 流式输出、按书隔离的会话历史、基于原著内容的推荐追问（由大模型从 skill.md 提炼）
+- **AI 对话**：SSE 流式输出、按书隔离的会话历史、基于原著内容的推荐追问（由大模型从 skill.md 提炼）；对话列表支持单条删除与一键清空
+- **面对面语音对话**：AI 回复逐句交给 DashScope 语音合成（CosyVoice HTTP / Qwen-Omni Realtime 复刻音色），16:9 全屏沉浸界面，与「书信」文字模式共用同一会话
 - **会员与配额**：普通 / 月度 / 季度 / 年度四档，免费按日、付费按自然月重置；上游失败自动退还配额
 - **管理后台**（`/admin`）：仪表盘统计、导师书籍管理、标签管理、用户生命周期、会员开通、模型配置与连通性测试、协议配置
 - **多语言**：简体中文 / 繁体中文 / 英语，顶栏切换
@@ -14,7 +15,7 @@
 
 ## 技术栈
 
-React 19 + TypeScript 5.8 + Vite 6 + Tailwind CSS 4 / Express 4 / better-sqlite3（WAL）/ Pino + Sentry / Docker Compose + Caddy + restic
+React 19 + TypeScript 5.8 + Vite 6 + Tailwind CSS 4 / Express 4 / better-sqlite3（WAL）/ ws（Qwen-Omni Realtime）/ 阿里云 DashScope（LLM 与语音合成）/ Pino + Sentry / Docker Compose + Caddy + restic
 
 ## 快速开始
 
@@ -71,9 +72,11 @@ npm run dev
 | `server/app.ts` | Express 应用装配（安全中间件顺序、路由、静态资源、子路径挂载） |
 | `server/db.ts` | SQLite schema、迁移与自检、账号 / 会话 / 配额 / 统计 |
 | `server/middleware/auth.ts` | 会话解析、CSRF、用户 / 管理员鉴权 |
-| `server/routes/` | auth（登录、强制改密、注销）、skills、follows（关注）、chat（会话 + SSE）、admin、config |
-| `server/services/` | 安全（AES-GCM / 随机令牌）、配额、LLM 调用、日志、指标 |
+| `server/routes/` | auth（登录、强制改密、注销）、skills、follows（关注）、chat（会话 + SSE）、tts（语音合成）、admin、config |
+| `server/services/` | 安全（AES-GCM / 随机令牌）、配额、LLM 调用、语音合成（CosyVoice / Qwen-Omni Realtime）、日志、指标 |
 | `src/components/AiStudioWorkspace.tsx` | 用户端：市场与聊天工作区 |
+| `src/components/FaceToFaceView.tsx` | 面对面全屏界面（16:9 人物舞台 + 对话面板） |
+| `src/lib/useVoicePlayback.ts` | 逐句语音播放队列（预取、重试、当前朗读字幕） |
 | `src/components/AdminGate.tsx` / `AdminPanel.tsx` | 管理后台：登录门控与面板 |
 | `src/i18n/` | 多语言字典、取值、服务端错误码翻译 |
 | `tests/` | vitest + supertest 集成测试 |
@@ -82,9 +85,10 @@ npm run dev
 ## 核心约定（开发前必读）
 
 - **编码规范以 [AGENTS.md](AGENTS.md) 为准**（YAGNI、最少代码、精准修改、中文注释、强类型），项目结构与命令见 [CLAUDE.md](CLAUDE.md)。
-- 账号不开放自助注册，由管理员创建；用户首次登录强制改密。改密、重置密码、禁用账号必须撤销已有会话。
+- 支持手机号 + 密码自助注册（注册即登录，默认普通会员）；管理员仍可在后台建号并强制首登改密。忘记密码无自助找回，界面提示联系管理员。改密、重置密码、禁用账号必须撤销已有会话。
 - **会员到期时间两种口径不可混用**：后台配置等级以当前时间重新起算；升级 / 续费在原有效期上顺延。会员不支持主动降级。
 - 公开技能接口只返回 `PublicSkill`，绝不暴露 `systemPrompt`；LLM API Key 永不回传前端明文；上游失败必须退还预留配额。
+- 语音合成配置存 `system_config.tts_config`，DashScope Key 加密存储、管理端只回显 `apiKeyConfigured`；Qwen-Omni 复刻音色必须与创建时的 `target_model` 一致；「面对面」与「书信」共用同一会话，切换会话 / 模式或发送新消息必须中止旧语音。
 - **多语言**：简体中文是唯一权威源，改文案只动 `src/i18n/locales/zh-CN.ts`，`en.ts` / `zh-TW.ts` 必须同步补齐（漏键 `npm run lint` 即失败）。书名、作者、分类、协议正文属数据，不翻译。
 - 服务端错误返回错误码，用户端按码翻译（`src/i18n/serverMessage.ts`）；管理后台不做多语言。
 

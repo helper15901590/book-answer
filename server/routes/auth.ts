@@ -2,7 +2,7 @@ import { Express, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
-import { db } from '../db.js';
+import { db, getTodayString } from '../db.js';
 import {
   AuthRequest,
   clearUserSession,
@@ -11,16 +11,20 @@ import {
   requireUser,
   sanitizeUser,
 } from '../middleware/auth.js';
-import { PASSWORD_CHANGE_COOKIE, CHALLENGE_TTL_MS, COOKIE_SECURE } from '../config.js';
-import { sha256 } from '../services/security.js';
+import { PASSWORD_CHANGE_COOKIE, CHALLENGE_TTL_MS, COOKIE_SECURE, ADMIN_PHONE } from '../config.js';
+import { generateUserId, sha256 } from '../services/security.js';
 import { BCRYPT_ROUNDS, USER_PASSWORD_MIN_LENGTH, validateStrongPassword } from '../services/password.js';
 import { asyncJsonHandler } from '../middleware/asyncHandler.js';
 import { DELETE_ACCOUNT_PHRASES } from '../../src/i18n/deleteAccountPhrase.js';
+import { DEFAULT_USER_AVATAR } from '../../src/data/initialData.js';
+import { UserProfile, tierDailyLimit } from '../../src/types.js';
 
 const authLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '尝试过于频繁，请稍后再试' } });
 // 改密单独用一个计数桶：首次登录必须走「登录 → 强制改密」两次请求，若与登录共用同一个桶，
 // 共享出口 IP 下每分钟只能放行 5 名新用户，等于把登录的防爆破额度消耗在改密上。
 const passwordChangeLimiter = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '尝试过于频繁，请稍后再试' } });
+// 注册是一次性动作，桶比登录更收紧：即使被脚本批量建号，也能把速度压到 5 个/分钟/IP。
+const registerLimiter = rateLimit({ windowMs: 60_000, limit: 5, standardHeaders: true, legacyHeaders: false, message: { error: 'RATE_LIMITED', message: '尝试过于频繁，请稍后再试' } });
 const loginSchema = z.object({ phone: z.string().trim().regex(/^\d{11}$/), password: z.string().min(1) });
 const passwordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(USER_PASSWORD_MIN_LENGTH).max(128) });
 const COOKIE_BASE = { httpOnly: true, secure: COOKIE_SECURE, sameSite: 'strict' as const, path: '/' };
@@ -61,6 +65,54 @@ export function registerAuthRoutes(app: Express): void {
     createUserSession(req, res, user.id);
     db.audit({ actorType: 'user', actorId: user.id, action: 'login_success', ip: req.ip, userAgent: req.get('user-agent') || undefined });
     return res.json({ success: true, user: sanitizeUser({ ...user, mustChangePassword: false }) });
+  }));
+
+  // 自助注册：手机号 + 密码即可，注册成功直接签发会话自动登录。
+  // 管理员手机号不落用户表（与后台建号一致），其余字段沿用后台建号的默认值：
+  // 普通会员、手机尾号昵称、默认头像、不强制改密。
+  app.post('/api/auth/register', registerLimiter, asyncJsonHandler(async (req, res) => {
+    const phone = String(req.body?.phone || '').trim();
+    const password = String(req.body?.password || '');
+    if (!/^\d{11}$/.test(phone)) {
+      return res.status(400).json({ error: 'INVALID_PHONE', message: '请输入 11 位手机号码' });
+    }
+    // 先查后插之间仍可能被并发请求抢先，唯一约束的兜底见下方 catch
+    if (phone === ADMIN_PHONE || db.getUserByPhone(phone)) {
+      return res.status(400).json({ error: 'PHONE_EXISTS', message: '该手机号已注册，请直接登录' });
+    }
+    if (password.length < USER_PASSWORD_MIN_LENGTH || password.length > 128) {
+      return res.status(400).json({ error: 'INVALID_PASSWORD', message: `密码至少 ${USER_PASSWORD_MIN_LENGTH} 个字符` });
+    }
+    const policyError = validateStrongPassword(password, USER_PASSWORD_MIN_LENGTH, phone, false);
+    if (policyError) return res.status(400).json({ error: 'INVALID_PASSWORD', message: policyError });
+
+    const user: UserProfile = {
+      id: generateUserId(),
+      phone,
+      password: await bcrypt.hash(password, BCRYPT_ROUNDS),
+      nickname: phone.slice(-4),
+      avatar: DEFAULT_USER_AVATAR,
+      role: 'member',
+      status: 'active',
+      membershipTier: 'free_member',
+      mustChangePassword: false,
+      dailyMaxChats: tierDailyLimit(db.getLLMConfig(), 'free_member'),
+      dailyUsedCount: 0,
+      lastActiveDate: getTodayString(),
+      createdAt: new Date().toISOString(),
+    };
+    let saved: UserProfile;
+    try {
+      saved = db.saveUser(user);
+    } catch (err: any) {
+      if (String(err?.message || '').includes('UNIQUE')) {
+        return res.status(400).json({ error: 'PHONE_EXISTS', message: '该手机号已注册，请直接登录' });
+      }
+      throw err;
+    }
+    createUserSession(req, res, saved.id);
+    db.audit({ actorType: 'user', actorId: saved.id, action: 'user_registered', ip: req.ip, userAgent: req.get('user-agent') || undefined });
+    return res.json({ success: true, user: sanitizeUser(saved) });
   }));
 
   // 仅服务于「首次登录强制改密」：必须携带登录时下发的改密凭证。

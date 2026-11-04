@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { LLMConfig, MembershipTier, Skill, SkillType, UserProfile, FollowedSkill, formatBookTitle, getEffectiveMembershipTier } from '../types';
+import { LLMConfig, TTSConfig, MembershipTier, Skill, SkillType, UserProfile, FollowedSkill, formatBookTitle, getEffectiveMembershipTier } from '../types';
 import ReactMarkdown from 'react-markdown';
 import { copyText } from '../lib/clipboard';
-import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY } from '../data/initialData';
+import { DEFAULT_USER_AGREEMENT, DEFAULT_PRIVACY_POLICY, DEFAULT_TTS_CONFIG } from '../data/initialData';
 import {
   Settings,
   Cpu,
@@ -36,6 +36,7 @@ import {
   Sparkles,
   Loader2,
   Star,
+  Volume2,
 } from 'lucide-react';
 import { apiFetch, assetSrc } from '../lib/apiFetch';
 
@@ -56,6 +57,28 @@ interface DailyCount {
 
 // 后台用户列表在共享 UserProfile 之外附带关注数（仅后台 DTO，不下发到用户端）
 type AdminUser = UserProfile & { followCount?: number };
+
+// DashScope CosyVoice v3 常用音色。后台音色是可直接编辑的字段，这里仅作为输入建议；
+// 音色参数必须与合成模型匹配（v3 系统音色搭配 cosyvoice-v3-flash / cosyvoice-v3-plus）。
+const TTS_VOICE_PRESETS: { value: string; label: string }[] = [
+  { value: 'longlaobo_v3', label: '龙老伯 · 沧桑岁月爷（男声，60 岁以上）' },
+  { value: 'longlaoyi_v3', label: '龙老姨 · 烟火从容阿姨（女声，60 岁以上）' },
+  { value: 'longcheng_v3', label: '龙橙 · 智慧青年男' },
+  { value: 'longnan_v3', label: '龙楠 · 睿智青年男' },
+  { value: 'longshu_v3', label: '龙书 · 沉稳青年男' },
+  { value: 'longyingxun_v3', label: '龙应询 · 年轻青涩男' },
+  { value: 'longze_v3', label: '龙泽 · 温暖元气男' },
+  { value: 'longyumi_v3', label: 'YUMI · 正经青年女' },
+  { value: 'longxiaochun_v3', label: '龙小淳 · 知性积极女' },
+  { value: 'longanran_v3', label: '龙安燃 · 活泼质感女' },
+  { value: 'longxing_v3', label: '龙星 · 温婉邻家女' },
+  { value: 'longtian_v3', label: '龙天 · 磁性理智男' },
+  { value: 'longsanshu_v3', label: '龙三叔 · 沉稳质感男' },
+  { value: 'longxiu_v3', label: '龙修 · 博才说书男' },
+  { value: 'longxiaoxia_v3', label: '龙小夏 · 沉稳权威女' },
+  { value: 'longyan_v3', label: '龙颜 · 温暖春风女' },
+  { value: 'longyue_v3', label: '龙悦 · 温暖磁性女' },
+];
 
 // 与 /api/admin/stats 响应保持一致（db.getAdminStats() 全量字段 + metrics 运行态字段）
 interface AdminStats {
@@ -242,6 +265,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [testingLLM, setTestingLLM] = useState(false);
   const [llmTestResult, setLlmTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  // 语音合成（TTS）配置：独立 system_config 行，与 LLM 配置分开保存、互不影响
+  const [ttsConfig, setTtsConfig] = useState<TTSConfig>(DEFAULT_TTS_CONFIG);
+  const [ttsApiKeyInput, setTtsApiKeyInput] = useState('');
+  const [testingTTS, setTestingTTS] = useState(false);
+
   const [isAddCategoryOpen, setIsAddCategoryOpen] = useState(false);
   const [newCatInput, setNewCatInput] = useState('');
   const [editingCategory, setEditingCategory] = useState<{ oldName: string; newName: string } | null>(null);
@@ -320,11 +348,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const fetchAdminData = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [resStats, resSkills, resUsers, resLlm, resTags] = await Promise.all([
+      const [resStats, resSkills, resUsers, resLlm, resTts, resTags] = await Promise.all([
         apiFetch('/api/admin/stats').then(ensureAdminAuthorized).then((r) => r.json()),
         apiFetch('/api/admin/skills').then(ensureAdminAuthorized).then((r) => r.json()),
         apiFetch('/api/admin/users').then(ensureAdminAuthorized).then((r) => r.json()),
         apiFetch('/api/admin/llm-config').then(ensureAdminAuthorized).then((r) => r.json()),
+        apiFetch('/api/admin/tts-config').then(ensureAdminAuthorized).then((r) => r.json()),
         apiFetch('/api/tags').then((r) => r.json()),
       ]);
 
@@ -332,6 +361,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (resSkills.skills) setSkills(resSkills.skills);
       if (resUsers.users) setAdminUsers(resUsers.users);
       if (resLlm.llmConfig) setLlmConfig(resLlm.llmConfig);
+      if (resTts.ttsConfig) setTtsConfig(resTts.ttsConfig);
       if (resTags && Array.isArray(resTags.tags)) {
         setDbCategories(resTags.tags);
       }
@@ -372,6 +402,64 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     } catch (err) {
       console.error('Error saving LLM config:', err);
       showToast('保存配置出现异常');
+    }
+  };
+
+  const handleSaveTTSConfig = async () => {
+    try {
+      const apiKey = ttsApiKeyInput.trim();
+      const res = await apiFetch('/api/admin/tts-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ttsConfig,
+          // 留空表示保持原 Key；填写才算替换，避免每次保存都要重新输入
+          ...(apiKey ? { apiKeyMode: 'replace', apiKey } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.ttsConfig) {
+        setTtsConfig(data.ttsConfig);
+        setTtsApiKeyInput('');
+        showToast('语音配置已保存，可点击「试听已保存的配置」验证效果');
+      } else {
+        showToast(data.message || data.error || '保存语音配置失败');
+      }
+    } catch (err) {
+      console.error('Error saving TTS config:', err);
+      showToast('保存语音配置出现异常');
+    }
+  };
+
+  // 试听使用已保存的配置：未保存的改动不参与试听，避免半套配置造成误判
+  const handleTestTTS = async () => {
+    if (testingTTS) return;
+    setTestingTTS(true);
+    try {
+      const res = await apiFetch('/api/admin/tts-test', { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast((data as any)?.message || (data as any)?.error || '试听失败，请检查配置');
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      const cleanup = () => URL.revokeObjectURL(url);
+      audio.onended = cleanup;
+      audio.onerror = cleanup;
+      try {
+        await audio.play();
+        showToast('正在播放试听音频');
+      } catch {
+        cleanup();
+        showToast('浏览器拦截了自动播放，请再次点击试听');
+      }
+    } catch (err) {
+      console.error('TTS test error:', err);
+      showToast('试听请求异常');
+    } finally {
+      setTestingTTS(false);
     }
   };
 
@@ -2454,6 +2542,169 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </div>
                   </div>
                 )}
+
+                {/* 语音对话（TTS）：独立保存的 DashScope CosyVoice 配置 */}
+                <div className="p-6 border border-slate-200/80 rounded-xl space-y-4 text-xs bg-white shadow-2xs">
+                  <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-900">语音对话（TTS）</h3>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        配置后用户端聊天页出现「面对面」入口：AI 回答逐句交给所选引擎合成语音；支持 CosyVoice 系统音色与 Qwen-Omni 复刻音色。
+                      </p>
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer shrink-0 pt-0.5">
+                      <span className="text-slate-600">{ttsConfig.enabled ? '已启用' : '已关闭'}</span>
+                      <input
+                        type="checkbox"
+                        checked={ttsConfig.enabled}
+                        onChange={(e) => setTtsConfig({ ...ttsConfig, enabled: e.target.checked })}
+                        className="w-4 h-4 accent-slate-900 cursor-pointer"
+                      />
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-700 font-medium text-xs mb-1.5">语音引擎</label>
+                    <select
+                      value={ttsConfig.provider}
+                      onChange={(e) => {
+                        const provider = e.target.value as TTSConfig['provider'];
+                        // 切换引擎时同步对应默认模型，避免旧模型与新音色不匹配
+                        setTtsConfig({
+                          ...ttsConfig,
+                          provider,
+                          model: provider === 'qwen-omni' ? 'qwen3.8-omni-flash-realtime' : 'cosyvoice-v3-flash',
+                          voice: provider === 'qwen-omni' ? '' : 'longlaobo_v3',
+                        });
+                      }}
+                      className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 shadow-2xs transition-colors cursor-pointer"
+                    >
+                      <option value="cosyvoice">CosyVoice（HTTP，系统音色 / CosyVoice 复刻）</option>
+                      <option value="qwen-omni">Qwen-Omni（Realtime，复刻音色）</option>
+                    </select>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      {ttsConfig.provider === 'qwen-omni'
+                        ? '复刻音色只能用创建它时的 target_model（如 qwen3.8-omni-flash-realtime）合成，走 Realtime WebSocket。'
+                        : 'CosyVoice 走 HTTP 文本合成接口，适合内置系统音色或 CosyVoice 复刻音色。'}
+                    </p>
+                  </div>
+
+                  {ttsConfig.provider === 'cosyvoice' ? (
+                    <div>
+                      <label className="block text-slate-700 font-medium text-xs mb-1.5">API 服务地址 (SpeechSynthesizer)</label>
+                      <input
+                        type="text"
+                        value={ttsConfig.apiBaseUrl}
+                        onChange={(e) => setTtsConfig({ ...ttsConfig, apiBaseUrl: e.target.value })}
+                        placeholder="https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer"
+                        className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-slate-700 font-medium text-xs mb-1.5">Realtime WebSocket 地址</label>
+                      <input
+                        type="text"
+                        value={ttsConfig.wsUrl}
+                        onChange={(e) => setTtsConfig({ ...ttsConfig, wsUrl: e.target.value })}
+                        placeholder="wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+                        className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
+                      />
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        qwen3.8 若控制台要求业务空间专属地址，请替换为 wss://你的业务空间ID.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime。
+                      </p>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-slate-700 font-medium text-xs mb-1.5">
+                      DashScope API Key
+                      {ttsConfig.apiKeyConfigured && (
+                        <span className="ml-2 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          已配置
+                        </span>
+                      )}
+                    </label>
+                    <input
+                      type="password"
+                      value={ttsApiKeyInput}
+                      onChange={(e) => setTtsApiKeyInput(e.target.value)}
+                      placeholder={ttsConfig.apiKeyConfigured ? '如需更换请填写新密钥，留空则保持不变' : '请填写 DashScope API Key'}
+                      className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      密钥加密保存在服务器，不会回显；语音合成与上方对话模型可以分别使用不同的 Key。
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    <div>
+                      <label className="block text-slate-700 font-medium text-xs mb-1.5">合成模型</label>
+                      <input
+                        type="text"
+                        value={ttsConfig.model}
+                        onChange={(e) => setTtsConfig({ ...ttsConfig, model: e.target.value })}
+                        placeholder={ttsConfig.provider === 'qwen-omni' ? 'qwen3.8-omni-flash-realtime' : 'cosyvoice-v3-flash'}
+                        className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-700 font-medium text-xs mb-1.5">
+                        {ttsConfig.provider === 'qwen-omni' ? '复刻音色参数' : '音色参数（可直接编辑）'}
+                      </label>
+                      <input
+                        type="text"
+                        list={ttsConfig.provider === 'cosyvoice' ? 'tts-voice-presets' : undefined}
+                        value={ttsConfig.voice}
+                        onChange={(e) => setTtsConfig({ ...ttsConfig, voice: e.target.value })}
+                        placeholder={ttsConfig.provider === 'qwen-omni' ? 'qwen-omni-vc-...' : 'longlaobo_v3'}
+                        className="w-full px-3 py-2 bg-white border border-slate-200/90 rounded-lg text-slate-800 text-xs focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 font-mono shadow-2xs transition-colors"
+                      />
+                      {ttsConfig.provider === 'cosyvoice' && (
+                        <datalist id="tts-voice-presets">
+                          {TTS_VOICE_PRESETS.map((voice) => (
+                            <option key={voice.value} value={voice.value}>{voice.label}</option>
+                          ))}
+                        </datalist>
+                      )}
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        {ttsConfig.provider === 'qwen-omni'
+                          ? '粘贴百炼「声音复刻」列表里的完整音色 ID；模型必须与创建音色时的 target_model 完全一致，保存后点「试听」验证。'
+                          : '可从下拉建议中选择，也可直接填写 DashScope 控制台的音色参数；v3 音色需搭配 cosyvoice-v3-flash / v3-plus，保存后点「试听」验证。'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      type="button"
+                      disabled={testingTTS}
+                      onClick={handleTestTTS}
+                      className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-xs font-medium cursor-pointer transition-colors flex items-center gap-1.5 border border-slate-200/90 shadow-2xs"
+                    >
+                      {testingTTS ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-600" />
+                          <span>正在合成试听...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Volume2 className="w-3.5 h-3.5 text-slate-500" />
+                          <span>试听已保存的配置</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleSaveTTSConfig}
+                      className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-medium cursor-pointer shadow-2xs transition-colors flex items-center gap-1.5"
+                    >
+                      <Save className="w-3.5 h-3.5 text-white" />
+                      <span>保存语音配置</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>

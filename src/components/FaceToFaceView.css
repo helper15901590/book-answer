@@ -1,0 +1,495 @@
+/* 面对面模式（沉浸版 · 全屏渐隐）：底图四边渐隐铺满屏幕，左上返回、右上全屏，
+   音波下方只展示最新一轮 AI 回复。类名统一 face- 前缀。 */
+.face-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: #0b1424;
+  color: #f3f5f9;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+.face-overlay,
+.face-overlay * {
+  box-sizing: border-box;
+}
+.face-overlay button,
+.face-overlay textarea {
+  font: inherit;
+}
+.face-overlay button {
+  cursor: pointer;
+}
+.face-overlay button:disabled {
+  cursor: default;
+}
+.face-overlay button:focus-visible,
+.face-overlay textarea:focus-visible {
+  outline: 2px solid #a5c8ff;
+  outline-offset: 5px;
+}
+.face-stage {
+  position: relative;
+  width: 100vw;
+  height: 100svh;
+  overflow: hidden;
+  isolation: isolate;
+  container-type: inline-size;
+  background: #0b1424;
+}
+.face-portrait {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(100vw, 177.777778svh);
+  height: min(56.25vw, 100svh);
+  transform: translate(-50%, -50%);
+  object-fit: contain;
+  z-index: -3;
+  /* 四边渐隐，融入页面背景 */
+  mask-image: linear-gradient(to right, transparent, #000 10%, #000 87%, transparent),
+    linear-gradient(to bottom, transparent, #000 12%, #000 82%, transparent);
+  mask-composite: intersect;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 10%, #000 87%, transparent),
+    linear-gradient(to bottom, transparent, #000 12%, #000 82%, transparent);
+  -webkit-mask-composite: source-in;
+}
+.face-shade {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background: linear-gradient(0deg, rgba(5, 13, 25, 0.68), transparent 28%),
+    linear-gradient(90deg, transparent 48%, rgba(6, 15, 29, 0.16) 75%);
+}
+.face-topbar {
+  position: absolute;
+  top: 5.1%;
+  left: 5.2%;
+  right: 5.2%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  z-index: 2;
+  opacity: 0.8;
+}
+.face-back-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  color: #c5d2e5;
+  background: none;
+  border: 0;
+  padding: 10px 0;
+}
+.face-back-button:hover {
+  color: #fff;
+}
+.face-back-button svg {
+  width: 13px;
+  height: 13px;
+  min-width: 13px;
+  min-height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.face-fullscreen-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35cqw;
+  min-width: 32px;
+  min-height: 40px;
+  padding: 0.45cqw 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: #bac7da;
+  font-size: 0.7cqw;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.face-fullscreen-button:hover {
+  color: #fff;
+}
+.face-fullscreen-button svg {
+  width: 0.85cqw;
+  height: 0.85cqw;
+  min-width: 13px;
+  min-height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.face-panel {
+  position: absolute;
+  left: 61%;
+  right: 7%;
+  top: 33%;
+  bottom: 13.7%;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.face-sound-wave {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 42px;
+  margin-bottom: 24px;
+  color: #b4c5dd;
+  flex: none;
+}
+.face-sound-wave span {
+  display: block;
+  width: 3px;
+  height: 7px;
+  border-radius: 4px;
+  background: currentColor;
+  opacity: 0.55;
+  transform: scaleY(0.5);
+}
+.face-sound-wave span:nth-child(3n) {
+  height: 27px;
+}
+.face-sound-wave span:nth-child(3n + 1) {
+  height: 17px;
+}
+.face-sound-wave span:nth-child(4n) {
+  height: 36px;
+}
+.face-sound-wave.is-speaking span {
+  animation: face-wave-talk 0.85s ease-in-out infinite alternate;
+  animation-delay: calc(var(--i) * -85ms);
+  opacity: 0.8;
+}
+.face-messages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.5cqw 0.2cqw 2.5cqw 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(199, 214, 236, 0.2) transparent;
+  overscroll-behavior: contain;
+}
+/* 最新一轮的筛选由组件完成，这里不再用 nth-child 隐藏历史消息 */
+.face-message {
+  margin: 0 0 1.75cqw;
+  animation: face-arrive 0.18s ease-out;
+}
+.face-message p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: #e1e8f2;
+  font-size: 1.13cqw;
+  font-weight: 400;
+  line-height: 2;
+  text-shadow: 0 2px 20px rgba(3, 11, 24, 0.26);
+}
+.face-message-assistant .markdown-preview {
+  color: #e1e8f2;
+  font-size: 1.13cqw;
+  font-weight: 400;
+  line-height: 2;
+  text-shadow: 0 2px 20px rgba(3, 11, 24, 0.26);
+}
+.face-message-assistant .markdown-preview p {
+  color: #e1e8f2;
+  font-size: inherit;
+  line-height: inherit;
+}
+.face-message-assistant .markdown-preview strong {
+  color: #ffffff;
+}
+.face-message-assistant .markdown-preview blockquote {
+  color: #c3d0e3;
+  border-left-color: rgba(165, 200, 255, 0.4);
+}
+.face-message-assistant .markdown-preview code {
+  background: rgba(190, 212, 255, 0.12);
+  color: #dce9ff;
+}
+.face-message-assistant .markdown-preview pre {
+  background: rgba(3, 10, 20, 0.6);
+}
+.face-message-assistant .markdown-preview a {
+  color: #a5c8ff;
+}
+.face-message-assistant .markdown-preview .animate-pulse {
+  background-color: #a5c8ff !important;
+}
+.face-message-replay {
+  cursor: pointer;
+}
+.face-message-replay:hover {
+  filter: brightness(1.08);
+}
+.face-welcome .face-hello {
+  font-size: 1.85cqw;
+  font-weight: 400;
+  line-height: 1.65;
+  letter-spacing: 0.04cqw;
+  margin: 0 0 1.15cqw;
+  color: #edf1f7;
+}
+.face-welcome .face-intro {
+  color: #b7c5d8;
+  font-size: 1.13cqw;
+  line-height: 2.05;
+  letter-spacing: 0.045cqw;
+  white-space: pre-line;
+}
+.face-typing {
+  color: #c3d2e8;
+  font-size: 0.95cqw;
+  letter-spacing: 0.15em;
+}
+.face-composer-form {
+  margin: 0;
+}
+.face-composer {
+  position: relative;
+  min-height: 0;
+  border: 0;
+  border-bottom: 1px solid rgba(213, 226, 247, 0.26);
+  border-radius: 0;
+  background: transparent;
+  transition: border-color 0.2s;
+}
+.face-composer:focus-within {
+  border-color: rgba(227, 237, 252, 0.7);
+}
+.face-composer-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.face-composer textarea {
+  display: block;
+  width: 100%;
+  height: 3.75cqw;
+  min-height: 64px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #eef3fa;
+  padding: 0.95cqw 3.7cqw 0.8cqw 0;
+  font-size: 1cqw;
+  line-height: 1.8;
+  letter-spacing: 0.035cqw;
+  scrollbar-width: thin;
+}
+.face-composer textarea:focus-visible {
+  outline: none;
+}
+.face-composer textarea::placeholder {
+  color: #adbbcf;
+  opacity: 0.88;
+}
+.face-send {
+  position: absolute;
+  right: 0.1cqw;
+  bottom: 0.8cqw;
+  width: 2.1cqw;
+  height: 2.1cqw;
+  min-width: 34px;
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(213, 227, 248, 0.26);
+  border-radius: 50%;
+  background: rgba(206, 222, 248, 0.06);
+  color: #d6e1ef;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.face-send:disabled {
+  opacity: 0.45;
+}
+.face-send:hover:enabled {
+  background: rgba(206, 222, 248, 0.16);
+  border-color: rgba(220, 234, 255, 0.6);
+}
+.face-send svg {
+  width: 1cqw;
+  height: 1cqw;
+  min-width: 18px;
+  min-height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+@keyframes face-arrive {
+  from {
+    opacity: 0.3;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes face-wave-talk {
+  from {
+    transform: scaleY(0.25);
+    opacity: 0.35;
+  }
+  to {
+    transform: scaleY(1);
+    opacity: 0.9;
+  }
+}
+/* 全屏时隐藏所有按钮，按 Esc 退出 */
+:root:fullscreen .face-topbar {
+  visibility: hidden;
+}
+:root:fullscreen .face-overlay button {
+  visibility: hidden;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .face-overlay *,
+  .face-overlay *::before,
+  .face-overlay *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+@media (max-width: 900px) {
+  .face-overlay {
+    overflow-y: auto;
+  }
+  .face-stage {
+    width: 100%;
+    height: auto;
+    min-height: 100svh;
+    overflow: visible;
+    container-type: normal;
+    padding: 0 16px 24px;
+    background: #142238;
+    padding-bottom: 32px;
+  }
+  .face-portrait {
+    left: 0;
+    top: 0;
+    transform: none;
+    width: 100%;
+    height: 76vw;
+    object-fit: cover;
+  }
+  .face-shade {
+    height: 78vw;
+    background: linear-gradient(0deg, #142238 2%, rgba(20, 34, 56, 0.3) 32%, transparent 65%);
+  }
+  .face-topbar {
+    position: relative;
+    inset: auto;
+    padding: 12px 0;
+    min-height: 64px;
+    gap: 10px;
+    flex-wrap: wrap;
+    opacity: 0.88;
+  }
+  .face-back-button {
+    padding: 8px 0;
+  }
+  .face-back-button svg {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    min-height: 14px;
+  }
+  .face-fullscreen-button {
+    min-height: 40px;
+    font-size: 11px;
+    padding: 8px 0;
+  }
+  .face-fullscreen-button svg {
+    width: 13px;
+    height: 13px;
+    min-width: 13px;
+    min-height: 13px;
+  }
+  .face-panel {
+    position: relative;
+    inset: auto;
+    margin-top: 49vw;
+    min-height: 360px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+  }
+  .face-sound-wave {
+    height: 36px;
+    margin-bottom: 18px;
+  }
+  .face-messages {
+    min-height: 240px;
+    max-height: 390px;
+    padding: 0 0 26px;
+  }
+  .face-message {
+    margin-bottom: 22px;
+  }
+  .face-message p,
+  .face-message-assistant .markdown-preview,
+  .face-message-assistant .markdown-preview p {
+    font-size: 16px;
+    line-height: 1.95;
+  }
+  .face-welcome .face-hello {
+    font-size: 24px;
+    line-height: 1.7;
+    margin-bottom: 14px;
+    letter-spacing: 0.3px;
+  }
+  .face-welcome .face-intro {
+    font-size: 16px;
+    line-height: 2;
+    letter-spacing: 0.3px;
+  }
+  .face-composer {
+    min-height: 0;
+  }
+  .face-composer textarea {
+    height: 72px;
+    min-height: 72px;
+    padding: 17px 52px 14px 0;
+    font-size: 16px;
+    line-height: 1.8;
+    letter-spacing: 0;
+  }
+  .face-send {
+    right: 0;
+    bottom: 16px;
+    width: 36px;
+    height: 36px;
+  }
+  .face-send svg {
+    width: 18px;
+    height: 18px;
+  }
+  .face-typing {
+    font-size: 14px;
+  }
+}

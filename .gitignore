@@ -16,3 +16,10 @@ commercial.sqlite*
 # local verification databases
 .test-runtime/
 .config-check-runtime/
+
+# 声音克隆与面对面设计交接资料（含 API Key、原始录音与大图），仅本地，严禁入库
+/声音克隆/
+/面对面/
+
+# 设计参考稿与临时产出，仅本地
+/outputs/
