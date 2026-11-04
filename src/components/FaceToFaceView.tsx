@@ -125,9 +125,17 @@ export const FaceToFaceView: React.FC<FaceToFaceViewProps> = ({
             title={isFullscreen ? t('workspace.faceExitFullscreen') : t('workspace.faceFullscreen')}
             aria-pressed={isFullscreen}
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5" />
-            </svg>
+            {isFullscreen ? (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5" />
+              </svg>
+            )}
+            {/* 全屏时其余控件隐藏，只有这个按钮保留文字「退出全屏」，避免用户找不到退出口 */}
+            {isFullscreen ? <span className="face-fullscreen-label">{t('workspace.faceExitFullscreen')}</span> : null}
           </button>
         </header>
 

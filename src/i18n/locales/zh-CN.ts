@@ -6,7 +6,10 @@
 import { DELETE_ACCOUNT_PHRASE_ZH_CN } from '../deleteAccountPhrase';
 
 export const zhCN = {
-  brand: { name: '问书' },
+  brand: { name: '泣不败文化广场' },
+  footer: {
+    aiDisclaimer: 'AI回答可能会有偏颇，注意核对检查',
+  },
   common: {
     all: '全部',
     close: '关闭',
@@ -34,7 +37,7 @@ export const zhCN = {
     allShown: '已展示全部 {count} {unit}',
     unitBooks: '本原著书籍',
     unitMentors: '位导师',
-    unitReliable: '项可靠内容',
+    unitReliable: '项文化内容',
   },
   bookDetail: {
     contentDetail: '内容详情',
@@ -146,7 +149,7 @@ export const zhCN = {
   workspace: {
     bookPlaza: '书籍广场',
     mentorPlaza: '导师广场',
-    reliablePlaza: '可靠广场',
+    reliablePlaza: '文化广场',
     followList: '关注列表',
     followEmpty: '还没有关注任何技能',
     followEmptyHint: '去广场逛逛，点击卡片上的「关注」即可加入这里',
@@ -192,8 +195,8 @@ export const zhCN = {
     welcomeBookNew: '你好！我是{title}的 AI 原著导师。\n\n已为你开启全新的对话页面，你可以随时提出你关注的问题。',
     welcomeMentor: '你好！我是【{author}】AI 思想导师。\n\n你可以随时向我提出关于其核心思想、决策智慧的问题，或探讨如何在实际场景中应用。',
     welcomeBook: '你好！我是{title}的 AI 原著导师。\n\n你可以随时向我提出关于本书核心观点、逻辑框架的问题，或探讨如何在实际场景中应用。',
-    welcomeReliableNew: '你好！我是{title}的 AI 可靠知识导师。\n\n已为你开启全新的对话页面，你可以随时提出你关注的问题。',
-    welcomeReliable: '你好！我是{title}的 AI 可靠知识导师。\n\n你可以随时向我提出关于其核心内容、方法框架的问题，或探讨如何在实际场景中应用。',
+    welcomeReliableNew: '你好！我是{title}的 AI 文化知识导师。\n\n已为你开启全新的对话页面，你可以随时提出你关注的问题。',
+    welcomeReliable: '你好！我是{title}的 AI 文化知识导师。\n\n你可以随时向我提出关于其核心内容、方法框架的问题，或探讨如何在实际场景中应用。',
     deepThinking: '深度思考中',
     thinkingSeconds: '已思考 {seconds} 秒',
     inputThinking: '模型深度思考回答中…可先在此输入下一条消息（回答完成后点击发送）',
@@ -225,7 +228,7 @@ export const zhCN = {
     clearSessionsFailed: '清空对话列表失败，请稍后重试',
     allBookTags: '全部图书标签',
     allMentorTags: '全部导师标签',
-    allReliableTags: '全部可靠标签',
+    allReliableTags: '全部文化标签',
     tagsCount: '（共 {count} 个标签）',
     allWithCount: '全部 ({count})',
     toast: {

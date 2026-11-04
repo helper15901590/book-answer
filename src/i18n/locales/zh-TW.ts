@@ -3,7 +3,10 @@ import { DELETE_ACCOUNT_PHRASE_ZH_TW } from '../deleteAccountPhrase';
 
 // 繁體中文（台灣慣用語）。同樣只改值、不動鍵名。
 export const zhTW: Dictionary = {
-  brand: { name: '問書' },
+  brand: { name: '泣不败文化广场' },
+  footer: {
+    aiDisclaimer: 'AI 回答可能會有偏頗，注意核對檢查',
+  },
   common: {
     all: '全部',
     close: '關閉',
@@ -31,7 +34,7 @@ export const zhTW: Dictionary = {
     allShown: '已顯示全部 {count} {unit}',
     unitBooks: '本原著書籍',
     unitMentors: '位導師',
-    unitReliable: '項可靠內容',
+    unitReliable: '項文化內容',
   },
   bookDetail: {
     contentDetail: '內容詳情',
@@ -143,7 +146,7 @@ export const zhTW: Dictionary = {
   workspace: {
     bookPlaza: '書籍廣場',
     mentorPlaza: '導師廣場',
-    reliablePlaza: '可靠廣場',
+    reliablePlaza: '文化廣場',
     followList: '關注列表',
     followEmpty: '尚未關注任何技能',
     followEmptyHint: '去廣場逛逛，點擊卡片上的「關注」即可加入這裡',
@@ -189,8 +192,8 @@ export const zhTW: Dictionary = {
     welcomeBookNew: '你好！我是{title}的 AI 原著導師。\n\n已為你開啟全新的對話頁面，你可以隨時提出你關注的問題。',
     welcomeMentor: '你好！我是【{author}】AI 思想導師。\n\n你可以隨時向我提出關於其核心思想、決策智慧的問題，或探討如何在實際場景中應用。',
     welcomeBook: '你好！我是{title}的 AI 原著導師。\n\n你可以隨時向我提出關於本書核心觀點、邏輯框架的問題，或探討如何在實際場景中應用。',
-    welcomeReliableNew: '你好！我是{title}的 AI 可靠知識導師。\n\n已為你開啟全新的對話頁面，你可以隨時提出你關注的問題。',
-    welcomeReliable: '你好！我是{title}的 AI 可靠知識導師。\n\n你可以隨時向我提出關於其核心內容、方法架構的問題，或探討如何在實際場景中應用。',
+    welcomeReliableNew: '你好！我是{title}的 AI 文化知識導師。\n\n已為你開啟全新的對話頁面，你可以隨時提出你關注的問題。',
+    welcomeReliable: '你好！我是{title}的 AI 文化知識導師。\n\n你可以隨時向我提出關於其核心內容、方法架構的問題，或探討如何在實際場景中應用。',
     deepThinking: '深度思考中',
     thinkingSeconds: '已思考 {seconds} 秒',
     inputThinking: '模型深度思考回答中…可先在此輸入下一則訊息（回答完成後點擊傳送）',
@@ -222,7 +225,7 @@ export const zhTW: Dictionary = {
     clearSessionsFailed: '清空對話列表失敗，請稍後重試',
     allBookTags: '全部圖書標籤',
     allMentorTags: '全部導師標籤',
-    allReliableTags: '全部可靠標籤',
+    allReliableTags: '全部文化標籤',
     tagsCount: '（共 {count} 個標籤）',
     allWithCount: '全部 ({count})',
     toast: {

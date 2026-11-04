@@ -4,7 +4,10 @@ import { DELETE_ACCOUNT_PHRASE_EN } from '../deleteAccountPhrase';
 // 英文文案会频繁迭代：只需改这里的「值」，键名与结构永远不要动。
 // 少写任何一个键都会让 `npm run lint` 报 missing property。
 export const en: Dictionary = {
-  brand: { name: 'Book answer' },
+  brand: { name: '泣不败文化广场' },
+  footer: {
+    aiDisclaimer: 'AI responses may be biased; please verify carefully.',
+  },
   common: {
     all: 'All',
     close: 'Close',
@@ -32,7 +35,7 @@ export const en: Dictionary = {
     allShown: 'All {count} {unit} shown',
     unitBooks: 'books',
     unitMentors: 'mentors',
-    unitReliable: 'reliable items',
+    unitReliable: 'cultural items',
   },
   bookDetail: {
     contentDetail: 'Details',
@@ -144,7 +147,7 @@ export const en: Dictionary = {
   workspace: {
     bookPlaza: 'Books',
     mentorPlaza: 'Mentors',
-    reliablePlaza: 'Reliable',
+    reliablePlaza: 'Cultural',
     followList: 'Following',
     followEmpty: 'You are not following anything yet',
     followEmptyHint: 'Browse the plazas and tap Follow on any card to add it here',
@@ -190,8 +193,8 @@ export const en: Dictionary = {
     welcomeBookNew: 'Hello! I am the AI mentor for {title}.\n\nA fresh conversation page is ready — ask anything you care about.',
     welcomeMentor: 'Hello! I am the AI mentor of {author}.\n\nAsk me anything about their core thinking and decision wisdom, or how to apply it in practice.',
     welcomeBook: 'Hello! I am the AI mentor for {title}.\n\nAsk me anything about the book’s key ideas and logic, or how to apply them in practice.',
-    welcomeReliableNew: 'Hello! I am the AI reliable-knowledge mentor for {title}.\n\nA fresh conversation page is ready — ask anything you care about.',
-    welcomeReliable: 'Hello! I am the AI reliable-knowledge mentor for {title}.\n\nAsk me anything about its core content and frameworks, or how to apply them in practice.',
+    welcomeReliableNew: 'Hello! I am the AI cultural-knowledge mentor for {title}.\n\nA fresh conversation page is ready — ask anything you care about.',
+    welcomeReliable: 'Hello! I am the AI cultural-knowledge mentor for {title}.\n\nAsk me anything about its core content and frameworks, or how to apply them in practice.',
     deepThinking: 'Thinking deeply',
     thinkingSeconds: 'Thought for {seconds}s',
     inputThinking: 'The model is still answering… you can type your next message here (send it once the answer finishes)',
@@ -223,7 +226,7 @@ export const en: Dictionary = {
     clearSessionsFailed: 'Could not clear conversations. Please try again later.',
     allBookTags: 'All book tags',
     allMentorTags: 'All mentor tags',
-    allReliableTags: 'All reliable tags',
+    allReliableTags: 'All cultural tags',
     tagsCount: '({count} tags)',
     allWithCount: 'All ({count})',
     toast: {

@@ -89,7 +89,7 @@ Express（server/app.ts 装配，中间件顺序如下）
 | `server/services/llm/` | 推荐问生成、消息清洗、API Key/URL 规整 | 中 |
 | `src/App.tsx` | 用户端根组件：用户态、公开配置、技能列表的加载与刷新 | 中 |
 | `src/components/AiStudioWorkspace.tsx` | 用户端全部 UI 与交互（广场、关注列表、聊天；1600+ 行） | 高 |
-| `src/components/PlazaView.tsx` + `src/lib/usePlazaController.ts` | 书籍 / 导师 / 可靠三广场共用的视图壳与筛选分页状态 | 中 |
+| `src/components/PlazaView.tsx` + `src/lib/usePlazaController.ts` | 书籍 / 导师 / 文化（`reliable`）三广场共用的视图壳与筛选分页状态 | 中 |
 | `src/components/FaceToFaceView.tsx` + `src/lib/useVoicePlayback.ts` | 面对面全屏界面（16:9 人物舞台 + 对话面板）与分句播放队列 | 中 |
 | `src/components/AdminPanel.tsx` | 后台全部页签（3100+ 行，见 §9） | 高 |
 | `src/i18n/` | 三语字典、`t()` 取值、服务端错误码翻译 | 高（改文案） |
@@ -208,14 +208,14 @@ CSRF Cookie 的 `maxAge` 与会话 Cookie 严格一致（用户 30 天 / 管理�
 
 ### 7.8 面对面模式（语音朗读）
 
-聊天页顶部是「书信 / 面对面」切换：书信即原有文字聊天；面对面打开全屏舞台（`src/components/FaceToFaceView.tsx` + `FaceToFaceView.css`），底图 `src/assets/face-portrait.png` 按 16:9 居中并四边渐隐铺满屏幕；左上「返回」退出、右上「全屏」（全屏时隐藏所有按钮，Esc 退出）。右侧对话区无面板底色，音波在上、只展示最新一轮 AI 回复（不回显用户提问），输入为细线样式；与文字聊天共用同一会话、消息与未发送草稿。AI 回复仍由现有对话模型生成；SSE 流式生成时前端按句切分（`src/lib/voiceText.ts`），逐句调用 `POST /api/tts/synthesize` 合成播放，播放队列（`src/lib/useVoicePlayback.ts`）维持「1 句在播 + 1 句在合成」的预取；`useVoicePlayback` 在每句音频开始播放时通过 `currentSpeechText / isRevealing` 只显示当前正在朗读的一句，新句替换旧句、上一句自动消失（逐句字幕为纯文本：流式分句可能切断 `**` 等 Markdown 标记，字幕与合成都使用已去除标记的文本；完整回复切回书信模式查看）；返回时停止语音。
+聊天页顶部是「书信 / 面对面」切换：书信即原有文字聊天；面对面打开全屏舞台（`src/components/FaceToFaceView.tsx` + `FaceToFaceView.css`），底图 `src/assets/face-portrait.png` 按 16:9 居中并四边渐隐铺满屏幕；左上「返回」退出、右上「全屏」；全屏时隐去其它控件，仅保留右上角「退出全屏」按钮（图标 + 文字），Esc 同样可退出。右侧对话区无面板底色，音波在上、只展示最新一轮 AI 回复（不回显用户提问），输入为细线样式；与文字聊天共用同一会话、消息与未发送草稿。AI 回复仍由现有对话模型生成；SSE 流式生成时前端按句切分（`src/lib/voiceText.ts`），逐句调用 `POST /api/tts/synthesize` 合成播放，播放队列（`src/lib/useVoicePlayback.ts`）维持「1 句在播 + 1 句在合成」的预取；`useVoicePlayback` 在每句音频开始播放时通过 `currentSpeechText / isRevealing` 只显示当前正在朗读的一句，新句替换旧句、上一句自动消失（逐句字幕为纯文本：流式分句可能切断 `**` 等 Markdown 标记，字幕与合成都使用已去除标记的文本；完整回复切回书信模式查看）；返回时停止语音。
 
 TTS 支持两种引擎（配置存 `system_config` 的 `tts_config`，API Key 用 `APP_ENCRYPTION_KEY` 加密）：
 
 - `cosyvoice`：DashScope CosyVoice HTTP 接口，返回 mp3；可用系统音色或 CosyVoice 复刻音色。
 - `qwen-omni`：Qwen-Omni Realtime WebSocket（`server/services/omniTts.ts`，服务端用 `ws` 包连接），PCM16/24k 音频由服务端封装成 WAV；用于 Omni 声音复刻音色。复刻音色必须与创建时的 `target_model` 一致（如 `qwen3.8-omni-flash-realtime`）；qwen3.8 若要求业务空间专属地址，后台可改 Realtime 地址。朗读契约必须同时放在 `session.instructions` 与 `response.create.response.instructions`——只放 session 级时，Omni 偶尔会把「什么是文化？」这类问句当成用户提问去回答，导致语音内容与字幕不一致。
 
-管理端「模型配置 → 语音对话（TTS）」可切换引擎、填写模型/音色并试听。`voiceModeEnabled` 只在「启用 + Key 有效 + 当前引擎字段齐全」时为真，用户端据此显示面对面入口。TTS 不额外扣聊天配额，接口有独立限流（60 次/分）与 500 字文本上限。
+管理端「模型配置 → 语音对话（TTS）」可切换引擎、填写模型/音色并试听。`voiceModeEnabled` 只在「启用 + Key 有效 + 当前引擎字段齐全」时为真；用户端据此显示面对面入口，但该入口**仅对「文化广场」（内部类型 `reliable`）类技能开放**——书籍 / 导师会话不显示，已在面对面时切换过去会自动退回书信模式。TTS 不额外扣聊天配额，接口有独立限流（按登录用户 120 次/分）与 500 字文本上限。
 
 ---
 

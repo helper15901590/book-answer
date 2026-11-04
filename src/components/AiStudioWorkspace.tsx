@@ -91,6 +91,46 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
   // 聊天呈现方式：书信 / 面对面。二者共用同一会话与消息流，只是视图不同。
   const [chatMode, setChatMode] = useState<'letter' | 'face'>('letter');
   const voiceModeAvailable = Boolean(llmConfig.voiceModeEnabled);
+
+  // 左栏会话列表可拖拽调整宽度：默认 192px（移动端 168px），范围 140~400px，偏好存 localStorage（仅 UI 偏好，非登录态）
+  const SIDEBAR_MIN_WIDTH = 140;
+  const SIDEBAR_MAX_WIDTH = 400;
+  const SIDEBAR_WIDTH_KEY = 'book-answer:sidebar-width';
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const dragWidthRef = useRef<number>(192);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (Number.isFinite(saved) && saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) {
+      return saved;
+    }
+    return typeof window !== 'undefined' && window.innerWidth < 640 ? 168 : 192;
+  });
+
+  // 按下分界线开始拖拽：pointermove 实时改宽，pointerup/cancel 落盘并复位光标
+  const handleSidebarResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sidebarRef.current?.getBoundingClientRect().width ?? sidebarWidth;
+    dragWidthRef.current = startW;
+    const onMove = (ev: PointerEvent) => {
+      const next = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, startW + (ev.clientX - startX)));
+      dragWidthRef.current = next;
+      setSidebarWidth(next);
+    };
+    const cleanup = () => {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(dragWidthRef.current));
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', cleanup);
+    window.addEventListener('pointercancel', cleanup);
+  };
   // SSE 回调里需要读取最新模式：中途退出面对面后停止继续喂语音，但不打断文字生成
   const chatModeRef = useRef<'letter' | 'face'>(chatMode);
   useEffect(() => {
@@ -364,6 +404,17 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
     }
     return selectedSkill || skills[0] || null;
   }, [skills, activeSession, selectedSkill]);
+
+  // 面对面仅对「可靠广场」类技能开放：书籍 / 导师技能只保留书信模式
+  const isFaceToFaceAllowed = activeSkill?.skillType === 'reliable';
+
+  // 会话切到书籍 / 导师技能时退出面对面，避免在非可靠内容上误入语音模式
+  useEffect(() => {
+    if (chatMode === 'face' && !isFaceToFaceAllowed) {
+      setChatMode('letter');
+      voicePlayback.stop();
+    }
+  }, [chatMode, isFaceToFaceAllowed]);
 
   // Isolated Input Draft per current dialog/session/book page
   // Ensures that whatever text is typed into the input of a book/session stays strictly on that page
@@ -996,7 +1047,17 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         {/* ========================================================================= */}
         {/* LEFT SIDEBAR COLUMN */}
         {/* ========================================================================= */}
-        <aside className="w-64 sm:w-72 bg-gray-50 flex flex-col justify-between shrink-0 h-full relative z-20 border-r border-gray-200">
+        {/* 会话列表栏宽度：可拖拽分界线调整，默认 192px（移动端 168px），偏好存 localStorage */}
+        <aside
+          ref={sidebarRef}
+          style={{ width: sidebarWidth }}
+          className="bg-gray-50 flex flex-col justify-between shrink-0 h-full relative z-20 border-r border-gray-200"
+        >
+          {/* 拖拽手柄：悬浮分界线可左右拖拽调整侧栏宽度 */}
+          <div
+            onPointerDown={handleSidebarResizeStart}
+            className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-blue-400/40 z-30 transition-colors"
+          />
           <div className="p-3 space-y-2">
             <button
               onClick={() => setMainView('reliable')}
@@ -1142,7 +1203,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                             isSelected ? 'text-[#2c221e] font-bold' : 'text-gray-800'
                           }`}
                         >
-                          <span className="truncate">{(() => {
+                          <span className="truncate flex-1 min-w-0">{(() => {
                             const s = skills.find((sk) => sk.id === session.skillId);
                             return s?.skillType === 'mentor' ? session.skillTitle : formatBookTitleByLocale(session.skillTitle, locale);
                           })()}</span>
@@ -1262,7 +1323,7 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
                       <MessageSquare className="w-3.5 h-3.5" />
                       <span>{t('workspace.textChatMode')}</span>
                     </button>
-                    {voiceModeAvailable && (
+                    {voiceModeAvailable && isFaceToFaceAllowed && (
                       <button
                         onClick={() => setChatMode('face')}
                         className={`px-3 py-1 rounded-full text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
@@ -1472,8 +1533,13 @@ export const AiStudioWorkspace: React.FC<AiStudioWorkspaceProps> = ({
         </main>
       </div>
 
+      {/* 页末免责提示：AI 回答可能有偏颇，请核对检查 */}
+      <footer className="shrink-0 h-7 flex items-center justify-center bg-white border-t border-gray-100">
+        <p className="text-[11px] text-gray-400">{t('footer.aiDisclaimer')}</p>
+      </footer>
+
       {/* 面对面全屏界面：覆盖整个应用；「书信」退出并回到文字聊天页 */}
-      {chatMode === 'face' && voiceModeAvailable && user && (
+      {chatMode === 'face' && voiceModeAvailable && isFaceToFaceAllowed && user && (
         <FaceToFaceView
           session={activeSession}
           inputText={inputText}

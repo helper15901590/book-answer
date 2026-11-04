@@ -4,10 +4,10 @@
 
 ## 功能特性
 
-- **书籍广场 / 导师广场 / 可靠广场**：分类、搜索、热度排行、详情页，20 张/批分页加载
+- **书籍广场 / 导师广场 / 文化广场**（内部类型 `reliable`）：分类、搜索、热度排行、详情页，20 张/批分页加载
 - **关注列表**：登录后可关注任意技能卡片，关注关系服务端持久化，集中查看已关注内容
 - **AI 对话**：SSE 流式输出、按书隔离的会话历史、基于原著内容的推荐追问（由大模型从 skill.md 提炼）；对话列表支持单条删除与一键清空
-- **面对面语音对话**：AI 回复逐句交给 DashScope 语音合成（CosyVoice HTTP / Qwen-Omni Realtime 复刻音色），16:9 全屏沉浸界面，与「书信」文字模式共用同一会话
+- **面对面语音对话**：AI 回复逐句交给 DashScope 语音合成（CosyVoice HTTP / Qwen-Omni Realtime 复刻音色），16:9 全屏沉浸界面，与「书信」文字模式共用同一会话；**仅「文化广场」（内部类型 `reliable`）类技能可用**（书籍 / 导师技能不显示面对面入口）
 - **会员与配额**：普通 / 月度 / 季度 / 年度四档，免费按日、付费按自然月重置；上游失败自动退还配额
 - **管理后台**（`/admin`）：仪表盘统计、导师书籍管理、标签管理、用户生命周期、会员开通、模型配置与连通性测试、协议配置
 - **多语言**：简体中文 / 繁体中文 / 英语，顶栏切换
@@ -50,6 +50,29 @@ npm run dev
 > 整个应用默认挂载在 `/bookanswer` 子路径下（子路径部署，前缀唯一配置点在仓库根 [basePath.ts](basePath.ts)，同时作用于 Vite 构建与运行时挂载）。改该文件后重启 `npm run dev` 即换前缀；置空则回落到根路径。
 
 首次进入后台：输入 `ADMIN_PHONE` / `ADMIN_PASSWORD` 即可登录。LLM API Key 可在后台「模型配置」填写，也可通过 `DEEPSEEK_API_KEY` 等环境变量提供。
+
+## 语音合成（面对面）配置
+
+在后台「模型配置 → 语音对话（TTS）」中配置，**不通过环境变量下发**。配置存 `system_config` 的 `tts_config`，DashScope API Key 用 `APP_ENCRYPTION_KEY` 加密落库，管理端只回显 `apiKeyConfigured`，任何接口都不返回明文。
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `enabled` | 语音总开关；关闭后用户端不显示「面对面」入口 | `false` |
+| `provider` | 语音引擎：`cosyvoice` 走 HTTP 文本合成（mp3）；`qwen-omni` 走 Realtime WebSocket（wav，用于复刻音色） | `cosyvoice` |
+| `apiBaseUrl` | CosyVoice HTTP 地址（`provider=cosyvoice` 时校验） | `https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer` |
+| `wsUrl` | Qwen-Omni Realtime 地址（`provider=qwen-omni` 时校验）；控制台若要求业务空间专属域名，填 `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` |
+| `model` | 合成模型。**选 qwen-omni 时必须与创建复刻音色时的 `target_model` 完全一致**，否则合成失败 | `cosyvoice-v3-flash` |
+| `voice` | 音色 ID：CosyVoice 音色名，或 Qwen-Omni 复刻音色 `qwen-omni-vc-...` | `longlaobo_v3` |
+| `apiKey` | DashScope API Key（北京地域）；加密存储，保存后不再回显 | — |
+
+用户端「面对面」入口是否出现，只看公开配置 `voiceModeEnabled`，判定条件是同时满足：`enabled` 为真、Key 有效（非占位值）、`model` 与 `voice` 非空，以及当前引擎所需地址非空（`cosyvoice` 看 `apiBaseUrl`，`qwen-omni` 看 `wsUrl`）。
+
+几点使用约束：
+
+- 复刻音色与 API Key 都绑定 DashScope 业务空间，换空间后需要重新创建音色并更换 Key 与地址，不能直接搬。
+- 单次合成文本上限 500 字；前端逐句调用（每句 ≤180 字），按登录用户 120 次/分钟限流。
+- Qwen-Omni 只负责「朗读」：回答文字仍由聊天模型生成，逐句交给 Omni 用复刻音色合成；它的朗读契约同时放在 `session.instructions` 与 `response.create.response.instructions`，避免把待朗读的问句当成问题回答。
+- 未配置或配置不全时，`/api/tts/synthesize` 返回 `TTS_NOT_CONFIGURED`，用户端只提示语音不可用，文字对话不受影响。
 
 ## 常用命令
 

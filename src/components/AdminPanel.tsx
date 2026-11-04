@@ -2742,7 +2742,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 >
                   <option value="book">书籍（原著蒸馏）</option>
                   <option value="mentor">导师（人物思想）</option>
-                  <option value="reliable">可靠（可靠广场）</option>
+                  <option value="reliable">可靠（文化广场）</option>
                 </select>
               </div>
 

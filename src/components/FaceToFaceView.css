@@ -126,6 +126,12 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/* 全屏时显示的「退出全屏」文字，非全屏不渲染 */
+.face-fullscreen-label {
+  font-size: 0.72cqw;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
 .face-panel {
   position: absolute;
   left: 61%;
@@ -357,13 +363,18 @@
     opacity: 0.9;
   }
 }
-/* 全屏时隐藏所有按钮，按 Esc 退出 */
+/* 全屏时隐藏所有按钮，但保留右上角「退出全屏」按钮；Esc 同样可退出 */
 :root:fullscreen .face-topbar {
-  visibility: hidden;
+  visibility: visible;
 }
 :root:fullscreen .face-overlay button {
   visibility: hidden;
   pointer-events: none;
+}
+/* 特异性需高于上一条 button 规则，否则退出按钮也会被一起隐藏 */
+:root:fullscreen .face-overlay .face-fullscreen-button {
+  visibility: visible;
+  pointer-events: auto;
 }
 @media (prefers-reduced-motion: reduce) {
   .face-overlay *,
@@ -427,6 +438,9 @@
     height: 13px;
     min-width: 13px;
     min-height: 13px;
+  }
+  .face-fullscreen-label {
+    font-size: 11px;
   }
   .face-panel {
     position: relative;
