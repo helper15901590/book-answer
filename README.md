@@ -67,6 +67,17 @@ npm run dev
 
 用户端「面对面」入口是否出现，只看公开配置 `voiceModeEnabled`，判定条件是同时满足：`enabled` 为真、Key 有效（非占位值）、`model` 与 `voice` 非空，以及当前引擎所需地址非空（`cosyvoice` 看 `apiBaseUrl`，`qwen-omni` 看 `wsUrl`）。
 
+当前使用中的 Qwen-Omni 复刻音色配置：
+
+| 字段 | 值 |
+|------|-----|
+| `provider` | `qwen-omni` |
+| `wsUrl` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` |
+| `model` | `qwen3.8-omni-flash-realtime` |
+| `voice` | `qwen-omni-vc-myvoice-voice-20261103110738442-2b90` |
+
+`model` 必须与创建该复刻音色时的 `target_model` 完全一致，且与 `voice` 配对使用；音色 ID 绑定 DashScope 业务空间，更换 Key 或业务空间后需重新创建音色。API Key 不入库本文档，只在后台配置。
+
 几点使用约束：
 
 - 复刻音色与 API Key 都绑定 DashScope 业务空间，换空间后需要重新创建音色并更换 Key 与地址，不能直接搬。
